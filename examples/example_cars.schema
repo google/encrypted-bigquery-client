@@ -1,0 +1,10 @@
+[
+  {"name": "Year", "type": "integer", "mode": "required", "encrypt": "none"},
+  {"name": "Make", "type": "string", "mode": "required", "encrypt": "pseudonym"},
+  {"name": "Model", "type": "string", "mode": "required", "encrypt": "probabilistic_searchwords"},
+  {"name": "Description", "type": "string", "mode": "nullable", "encrypt": "searchwords"},
+  {"name": "Website", "type": "string", "mode": "nullable", "encrypt": "searchwords", "searchwords_separator": "/"},
+  {"name": "Price", "type": "float", "mode": "required", "encrypt": "probabilistic"},
+  {"name": "Invoice_Price", "type": "integer", "mode": "required", "encrypt": "homomorphic"},
+  {"name": "Holdback_Percentage", "type": "float", "mode": "required", "encrypt": "homomorphic"}
+]

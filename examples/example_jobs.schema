@@ -1,0 +1,27 @@
+[
+  {"name": "kind", "type": "string", "mode": "required", "encrypt": "none"},
+  {"name": "fullName", "type": "string", "mode": "required", "encrypt":
+  "pseudonym"},
+  {"name": "age", "type": "integer", "mode": "required", "encrypt":
+  "homomorphic"},
+  {"name": "gender", "type": "string", "mode": "nullable", "encrypt":
+  "probabilistic_searchwords"},
+  {"name": "citiesLived", "type": "record", "mode": "repeated", "fields":
+  [
+    {"name": "place", "type": "string", "mode": "required", "encrypt":
+    "searchwords", "searchwords_separator": "/"},
+    {"name": "numberOfYears", "type": "float", "mode": "required", "encrypt":
+    "homomorphic"},
+    {"name": "job", "type": "record", "mode": "repeated", "fields":
+    [
+      {"name": "position", "type": "string", "mode": "required", "encrypt":
+      "pseudonym"},
+      {"name": "yearsPositionHeld", "type": "float", "mode": "required",
+      "encrypt": "probabilistic"},
+      {"name": "manager", "type": "string", "mode": "repeated", "encrypt":
+      "searchwords"},
+      {"name": "jobRank", "type": "integer", "mode": "nullable", "encrypt":
+      "none"}
+    ]}
+  ]}
+]
