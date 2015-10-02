@@ -225,8 +225,8 @@ class QueryInterpreterTest(googletest.TestCase):
     self.assertEqual(
         interpreter.RewriteSelectionCriteria(stack, schema, key, _TABLE_ID),
         '(' + util.SEARCHWORDS_PREFIX + 'Model contains '
-        'to_base64(left(sha1(concat(left(' + util.SEARCHWORDS_PREFIX +
-        'Model, 24), \'yB9HY2qv+DI=\')), 8)))')
+        'to_base64(left(bytes(sha1(concat(left(' + util.SEARCHWORDS_PREFIX +
+        'Model, 24), \'yB9HY2qv+DI=\'))), 8)))')
     stack = [util.SearchwordsToken('Model'), util.FieldToken('Year'),
              util.OperatorToken('contains', 2)]
     self.assertRaises(
@@ -252,16 +252,16 @@ class QueryInterpreterTest(googletest.TestCase):
     self.assertEqual(
         interpreter.RewriteSelectionCriteria(stack, schema, key, _TABLE_ID),
         'not (' + util.SEARCHWORDS_PREFIX + 'Model contains '
-        'to_base64(left(sha1(concat(left(' + util.SEARCHWORDS_PREFIX +
-        'Model, 24), \'yB9HY2qv+DI=\')), 8)))')
+        'to_base64(left(bytes(sha1(concat(left(' + util.SEARCHWORDS_PREFIX +
+        'Model, 24), \'yB9HY2qv+DI=\'))), 8)))')
     schema = test_util.GetPlacesSchema()
     stack = [util.SearchwordsToken('citiesLived.place'),
              util.StringLiteralToken('"A"'), util.OperatorToken('contains', 2)]
     self.assertEqual(
         interpreter.RewriteSelectionCriteria(stack, schema, key, _TABLE_ID),
         '(citiesLived.' + util.SEARCHWORDS_PREFIX + 'place contains '
-        'to_base64(left(sha1(concat(left(citiesLived.' +
-        util.SEARCHWORDS_PREFIX + 'place, 24), \'cBKPKGiY2cg=\')), 8)))')
+        'to_base64(left(bytes(sha1(concat(left(citiesLived.' +
+        util.SEARCHWORDS_PREFIX + 'place, 24), \'cBKPKGiY2cg=\'))), 8)))')
 
   def testGetSingleValue(self):
     stack = [1, 1, 1, util.OperatorToken('+', 2)]

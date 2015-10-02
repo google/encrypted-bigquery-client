@@ -262,7 +262,7 @@ def RewriteSelectionCriteria(stack, schema, master_key, table_id):
                   % string_hasher.GetStringKeyHash(
                       modified_field.split('.')[-1], word_seq))
     modified_string = (
-        u'to_base64(left(sha1(concat(left(%s, 24), %s)), 8))'
+        u'to_base64(left(bytes(sha1(concat(left(%s, 24), %s))), 8))'
         % (modified_field, keyed_hash))
     return (modified_field, modified_string)
 

@@ -251,8 +251,8 @@ class QueryLibraryTest(googletest.TestCase):
                                           master_key=master_key,
                                           table_id=_TABLE_ID)
     self.assertEqual(where_clause.Rewrite(),
-                     'WHERE (%sModel contains to_base64(left(sha1(concat(left('
-                     '%sModel, 24), \'yB9HY2qv+DI=\')), 8)))'
+                     'WHERE (%sModel contains to_base64(left(bytes(sha1(concat(left('
+                     '%sModel, 24), \'yB9HY2qv+DI=\'))), 8)))'
                      % (util.SEARCHWORDS_PREFIX,
                         util.SEARCHWORDS_PREFIX))
     stack = []
