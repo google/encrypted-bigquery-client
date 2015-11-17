@@ -598,6 +598,11 @@ class PaillierTest(googletest.TestCase):
     except OverflowError:
       pass  # success
 
+  def testTestSslRegression(self):
+    """Test TestSslRegression() module method."""
+    self.assertTrue(paillier._FOUND_SSL)
+    paillier.TestSslRegression()
+
 
 def main(_):
   googletest.main()

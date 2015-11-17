@@ -353,7 +353,7 @@ def ConvertCsvDataFile(schema, master_key, table_id, infile, outfile):
       num_columns = len(schema)
       csv_writer = csv.writer(out_file)
       _ValidateCsvDataFile(schema, infile)
-      csv_reader = _Utf8CsvReader(in_file)
+      csv_reader = _Utf8CsvReader(in_file, csv_writer)
       for row in csv_reader:
         new_row = []
         if len(row) != num_columns:
@@ -652,8 +652,38 @@ def _ValidateDataType(type_value, data_value):
                                 'cannot convert %s.' % data_value)
 
 
-def _Utf8CsvReader(utf8_csv_data, **kwargs):
+def _Utf8CsvReader(utf8_csv_data, skip_rows_writer=None, **kwargs):
+  """Read from utf8_csv_data filename and yield rows.
+
+  Args:
+    utf8_csv_data: str, filename like 'foo.csv'
+    skip_rows_writer: callable like csv.writer, optional, where to write
+        rows to if FLAGS.skip_leading_rows > 0
+    **kwargs: other options supplied directly to the csv.reader instance.
+  Yields:
+    rows of rows from utf8_csv_data file, read as a CSV file.
+  Raises:
+    EncryptConvertError: if flag allow_quoted_newlines is supplied and false.
+  """
+  # normally the CSV format-related flags e.g. skip_leading_rows
+  # are just uploaded to the cloud as part of the load RPC. however
+  # since ebq preprocesses the CSV into encrypted format the flags
+  # must be respected here also.
+  if kwargs.get('dialect', None) is None:
+    # set this to a likely sane default
+    kwargs['dialect'] = 'excel'
   csv_reader = csv.reader(utf8_csv_data, **kwargs)
+  if FLAGS.skip_leading_rows is not None:
+    logging.debug('skip_leading_rows: %d', FLAGS.skip_leading_rows)
+    for _ in xrange(FLAGS.skip_leading_rows):
+      row = csv_reader.next()
+      if skip_rows_writer is not None:
+        skip_rows_writer.writerow(row)
+  if FLAGS.allow_quoted_newlines is not None:
+    # not sure how to configure csv reader to do this, and it is a bad idea.
+    if not FLAGS.allow_quoted_newlines:
+      raise EncryptConvertError('ebq cannot be configured to not allow '
+                                'quoted newlines')
   for row in csv_reader:
     # decode UTF-8 back to Unicode, cell by cell:
     yield [unicode(cell, 'utf-8') for cell in row]

@@ -52,6 +52,7 @@ _ONES_FLOAT_SIGN_LOW_LSB = long('1' * FLOAT_SIGN_LOW_LSB, 2)
 
 # -- openssl function args and return types
 _FOUND_SSL = False
+_TESTED_SSL = False
 try:
   if platform.system() == 'Windows':
     ssl_libpath = ctypes.util.find_library('libeay32')
@@ -567,3 +568,20 @@ def ModExp(a, b, c):
   ssl.BN_free(bn_result)
 
   return long_result
+
+
+def TestSslRegression():
+  """Test openssl BN functions ctypes setup for regressions."""
+  if not _FOUND_SSL:
+    return
+  a = 13237154333272387305  # random
+  b = 14222796656191241573  # random
+  c = 14335739297692523692  # random
+  expect_m = 10659231545499717801  # pow(a, b, c)
+  m = ModExp(a, b, c)
+  assert m == expect_m, 'TestSslRegression: unexpected ModExp result'
+
+
+if not _TESTED_SSL:
+  TestSslRegression()
+  _TESTED_SSL = True

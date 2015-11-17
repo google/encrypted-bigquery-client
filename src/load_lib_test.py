@@ -13,6 +13,9 @@ import json
 import os
 import tempfile
 
+import mox
+import stubout
+
 from google.apputils import app
 import gflags as flags
 import logging
@@ -253,13 +256,33 @@ _MASTER_KEY = 'yUotEBhjyCDzQEAxgb0/BA=='
 
 
 
+# these flags are created in bigquery 'bq' module. create them here for
+# testing against their values in load_lib.
+load_lib.flags.DEFINE_integer('skip_leading_rows', None, 'test')
+load_lib.flags.DEFINE_boolean('allow_quoted_newlines', None, 'test')
+
 
 class LoadLibraryTest(googletest.TestCase):
 
   def setUp(self):
     """Run once for each test in the class."""
+    self.mox = mox.Mox()
+    self.stubs = stubout.StubOutForTesting()
     os.environ['TMPDIR'] = FLAGS.test_tmpdir
     self.dirname = tempfile.mkdtemp()
+
+  def tearDown(self):
+    self.mox.UnsetStubs()
+    self.stubs.UnsetAll()
+
+  def _SetupTestFlags(self, **kwargs):
+    defaults = {
+        'skip_leading_rows': None,
+        'allow_quoted_newlines': None,
+    }
+    defaults.update(kwargs)
+    for k, v in defaults.iteritems():
+      self.stubs.Set(load_lib.FLAGS, k, v)
 
   def _WriteTempCarsCsvFile(self):
     output = test_util.GetCarsCsv()
@@ -398,6 +421,7 @@ class LoadLibraryTest(googletest.TestCase):
     load_lib._ValidateJsonDataFile(schema, infile)
 
   def testConvertCsvDataFile(self):
+    self._SetupTestFlags()
     schema = json.loads(test_util.GetCarsSchemaString())
     infile = self._WriteTempCarsCsvFile()
     outfile = os.path.join(self.dirname, 'cars.enc_data')
@@ -505,6 +529,58 @@ class LoadLibraryTest(googletest.TestCase):
         len(data['citiesLived'][0]['job'][0][util.SEARCHWORDS_PREFIX +
                                              u'manager'][0].split(' ')), 4)
     fout.close()
+
+  def testUtf8CsvReader(self):
+    """Test _Utf8CsvReader()."""
+    self._SetupTestFlags()
+    self.mox.StubOutWithMock(load_lib.csv, 'reader')
+    input_path = '/path/to/file'
+    csv_reader = [['line0'], ['line1']]
+
+    expect_kwargs = {'dialect': 'excel', 'foo': 'bar'}
+    load_lib.csv.reader(input_path, **expect_kwargs).AndReturn(csv_reader)
+    i = 0
+
+    self.mox.ReplayAll()
+    reader = load_lib._Utf8CsvReader(input_path, foo='bar')
+    for row in reader:
+      self.assertTrue(i <= len(csv_reader))
+      self.assertEqual(row, csv_reader[i])
+      i += 1
+    self.mox.VerifyAll()
+
+  def testUtf8CsvReaderWhenSkipLeadingRows(self):
+    """Test _Utf8CsvReader()."""
+    skip_leading_rows = 1
+    input_path = '/path/to/file'
+
+    self._SetupTestFlags(skip_leading_rows=skip_leading_rows)
+    csv_writer = self.mox.CreateMockAnything()
+    self.mox.StubOutWithMock(load_lib.csv, 'reader')
+
+    header_row = '#header'
+
+    class TestList(list):
+      """Lazy container built on list and fake next() method, for testing."""
+
+      def next(self):  # pylint: disable=invalid-name
+        return header_row
+    csv_reader = TestList([['line0'], ['line1']])
+    self.stubs.Set(csv_reader, 'next', lambda: header_row)
+
+    expect_kwargs = {'dialect': 'excel', 'foo': 'bar'}
+    load_lib.csv.reader(input_path, **expect_kwargs).AndReturn(csv_reader)
+    csv_writer.writerow(header_row)
+    i = 0
+
+    self.mox.ReplayAll()
+    reader = load_lib._Utf8CsvReader(
+        input_path, foo='bar', skip_rows_writer=csv_writer)
+    for row in reader:
+      self.assertTrue(i <= len(csv_reader))
+      self.assertEqual(row, csv_reader[i])
+      i += 1
+    self.mox.VerifyAll()
 
 
 def main(_):

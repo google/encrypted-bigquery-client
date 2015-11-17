@@ -32,6 +32,7 @@ REQUIRED_PACKAGES = [
     'pyparsing==1.5.5',
     'pycrypto==2.1',
     'httplib2==0.8',
+    'mox==0.5.3',
     ]
 # TODO: Export tests.
 CONSOLE_SCRIPTS = [
@@ -45,7 +46,7 @@ py_version = platform.python_version()
 if py_version < '2.7' or py_version >= '3':
   raise ValueError('Encrypted BigQuery requires Python >= 2.7 and < 3.')
 
-_EBQ_VERSION = '1.2'  # keep in sync with BUILD:VERSION
+_EBQ_VERSION = '1.3'  # keep in sync with BUILD:VERSION
 
 setup(name='encrypted_bigquery',
       version=_EBQ_VERSION,
@@ -54,7 +55,7 @@ setup(name='encrypted_bigquery',
       author='Google Inc.',
       author_email='ebq-team@google.com',
       # Contained modules and scripts.
-      package_dir = {'': 'src'},
+      package_dir={'': 'src'},
       py_modules=[
           'common_crypto',
           'common_crypto_test',
