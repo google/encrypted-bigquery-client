@@ -8,6 +8,8 @@
 
 
 import base64
+import mox
+import stubout
 
 from google.apputils import app
 import logging
@@ -23,6 +25,15 @@ _PLAINTEXT2 = 'this is test string two'
 
 class CommonCryptoTest(googletest.TestCase):
 
+  def setUp(self):
+    """Run once for each test in the class."""
+    self.mox = mox.Mox()
+    self.stubs = stubout.StubOutForTesting()
+
+  def tearDown(self):
+    self.mox.UnsetStubs()
+    self.stubs.UnsetAll()
+
   def testGetRandBytes(self):
     logging.debug('Running testGetRandBytes method.')
     rand1 = ccrypto.GetRandBytes(16)
@@ -31,6 +42,48 @@ class CommonCryptoTest(googletest.TestCase):
     self.assertEqual(16, len(rand1))
     self.assertEqual(16, len(rand2))
     self.assertNotEqual(rand1, rand2)
+
+  def testGetRandBytesWhenZero(self):
+    logging.debug('Running testGetRandBytesWhenZero method.')
+    self.assertRaises(ValueError, ccrypto.GetRandBytes, 0)
+    self.assertRaises(ValueError, ccrypto.GetRandBytes, -10)
+
+  def testGetRandBytesWhenPlatformLinux(self):
+    logging.debug('Running testGetRandBytesWhenPlatformLinux method.')
+
+    fmock = self.mox.CreateMockAnything()
+    self.stubs.Set(ccrypto, '_f_urandom_func', None)
+    self.mox.StubOutWithMock(ccrypto.platform, 'uname')
+    self.mox.StubOutWithMock(ccrypto.os, 'urandom')
+    ccrypto.platform.uname().AndReturn(['Linux', 'h', 'v', 'x', 'x86', 'x86'])
+    fmock('/dev/urandom', 'rb', ccrypto._F_URANDOM_BUFLEN).AndReturn(fmock)
+    fmock.read(16).AndReturn('a' * 16)
+    fmock.read(16).AndReturn('b' * 16)
+
+    self.mox.ReplayAll()
+    b = ccrypto.GetRandBytes(16, _open=fmock)
+    self.assertEqual(len(b), 16)
+    b = ccrypto.GetRandBytes(16, _open=fmock)
+    self.assertEqual(len(b), 16)
+    self.mox.VerifyAll()
+
+  def testGetRandBytesWhenPlatformOther(self):
+    logging.debug('Running testGetRandBytesWhenPlatformOther method.')
+
+    fmock = self.mox.CreateMockAnything()
+    self.stubs.Set(ccrypto, '_f_urandom_func', None)
+    self.mox.StubOutWithMock(ccrypto.platform, 'uname')
+    self.mox.StubOutWithMock(ccrypto.os, 'urandom')
+    ccrypto.platform.uname().AndReturn(['OFQv', 'h', 'v', 'x', 'x86', 'x86'])
+    ccrypto.os.urandom(16).AndReturn('a' * 16)
+    ccrypto.os.urandom(16).AndReturn('b' * 16)
+
+    self.mox.ReplayAll()
+    b = ccrypto.GetRandBytes(16, _open=fmock)
+    self.assertEqual(len(b), 16)
+    b = ccrypto.GetRandBytes(16, _open=fmock)
+    self.assertEqual(len(b), 16)
+    self.mox.VerifyAll()
 
   def testPRF(self):
     logging.debug('Running testPRF method.')

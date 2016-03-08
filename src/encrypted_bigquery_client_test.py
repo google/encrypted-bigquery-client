@@ -8,6 +8,9 @@
 from copy import deepcopy
 import random
 
+import mox
+import stubout
+
 from google.apputils import app
 import gflags as flags
 from google.apputils import basetest as googletest
@@ -23,6 +26,14 @@ FLAGS = flags.FLAGS
 
 # TODO(user): Need to add unit tests for _DecryptRows.
 class EncryptedBigqueryClientTest(googletest.TestCase):
+
+  def setUp(self):
+    self.mox = mox.Mox()
+    self.stubs = stubout.StubOutForTesting()
+
+  def tearDown(self):
+    self.mox.UnsetStubs()
+    self.stubs.UnsetAll()
 
   def _EncryptTable(self, cipher, table, column_index):
     rewritten_table = deepcopy(table)
@@ -153,6 +164,76 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
                       encrypted_bigquery_client._DecryptGroupConcatValues,
                       query, table, 0, ciphers, jobs_schema,
                       util.HOMOMORPHIC_FLOAT_PREFIX)
+
+  def testCreateTable(self):
+    """Test CreateTable()."""
+
+    ebc_module = encrypted_bigquery_client
+    ebc_cls = ebc_module.EncryptedBigqueryClient
+
+    class SimpleTestEBC(ebc_cls):
+      """Class with simpler __init__, rather than lots of mox."""
+
+      def __init__(self, **kwds):
+        """Intentionally do not call parent __init__()."""
+        self.master_key_filename = 'master_key_filename'
+
+    mock_create_table = self.mox.CreateMockAnything()
+    mock_cipher = self.mox.CreateMockAnything()
+
+    in_reference = 'reference'
+    in_ignore_existing = False
+    in_schema = '/tmp/path/somewhere/dne/schemafile.schema'
+    in_description = 'description'
+    in_friendly_name = 'fn'
+    in_expiration = 1000
+
+    schema = {'rewrite': False, 'read': True}
+    master_key = 'master_key'
+    hashed_key = 'GR0xdEWYxzkd1FA+J50A3bWMq4c='  # b64(sha1(master_key))
+    encrypted_schema = 'EEE'
+    encrypted_schema_b64 = 'RUVF'  # b64(encrypted_schema)
+    new_schema = schema.copy()
+    new_schema.update(rewrite=True)
+
+    new_description = 'new_description'
+
+    ebc = SimpleTestEBC(test='1')
+    self.mox.StubOutWithMock(ebc, '_CheckKeyfileFlag')
+    self.mox.StubOutWithMock(ebc_module.load_lib, 'ReadSchemaFile')
+    self.mox.StubOutWithMock(ebc_module.load_lib, 'ReadMasterKeyFile')
+    self.mox.StubOutWithMock(ebc_module.ecrypto, 'ProbabilisticCipher')
+    self.mox.StubOutWithMock(ebc_module.json, 'dumps')
+    self.mox.StubOutWithMock(ebc_module.util, 'ConstructTableDescription')
+    self.mox.StubOutWithMock(ebc_module.load_lib, 'RewriteSchema')
+    self.stubs.Set(
+        ebc_module.bigquery_client.BigqueryClient, 'CreateTable',
+        mock_create_table)
+
+    ebc._CheckKeyfileFlag()
+    ebc_module.load_lib.ReadSchemaFile(in_schema).AndReturn(schema)
+    ebc_module.load_lib.ReadMasterKeyFile(
+        'master_key_filename', True).AndReturn(master_key)
+    ebc_module.ecrypto.ProbabilisticCipher(master_key).AndReturn(mock_cipher)
+    ebc_module.json.dumps(schema).AndReturn(str(schema))
+    mock_cipher.Encrypt(str(schema)).AndReturn(encrypted_schema)
+    ebc_module.util.ConstructTableDescription(
+        in_description, hashed_key, ebc_module.util.EBQ_VERSION,
+        encrypted_schema_b64).AndReturn(new_description)
+    ebc_module.load_lib.RewriteSchema(schema).AndReturn(new_schema)
+    # and here comes the super() call...
+    mock_create_table(
+        in_reference, in_ignore_existing, new_schema, new_description,
+        in_friendly_name, in_expiration).AndReturn(None)
+
+    self.mox.ReplayAll()
+    # CreateTable() takes a schema filename on disk for in_schema, but
+    # the superclass method takes a schema structure e.g. a dict.
+    ebc.CreateTable(
+        in_reference, ignore_existing=in_ignore_existing, schema=in_schema,
+        description=in_description, friendly_name=in_friendly_name,
+        expiration=in_expiration)
+    self.mox.VerifyAll()
 
 
 def main(_):

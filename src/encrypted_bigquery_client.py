@@ -343,18 +343,10 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
       description = ''
     new_description = util.ConstructTableDescription(
         description, hashed_key, util.EBQ_VERSION, encrypted_schema)
-    schema = load_lib.RewriteSchema(schema)
-    temp_dir = tempfile.mkdtemp()
-    new_schema = '%s/schema.enc_schema' % temp_dir
-    with open(new_schema, 'wt') as f:
-      json.dump(schema, f, indent=2)
+    new_schema = load_lib.RewriteSchema(schema)
     super(EncryptedBigqueryClient, self).CreateTable(
         reference, ignore_existing, new_schema, new_description, friendly_name,
         expiration)
-    try:
-      shutil.rmtree(temp_dir)
-    except OSError:
-      raise OSError('Temp file deleted by user before termination.')
 
 
 def _DecryptRows(fields, rows, master_key, table_id, schema, query_list,

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import tempfile
+import types
 
 import mox
 import stubout
@@ -405,6 +406,27 @@ class LoadLibraryTest(googletest.TestCase):
     expected_schema = json.loads(_JOBS_REWRITTEN_SCHEMA)
     self.assertEquals(expected_schema, new_schema)
 
+  def testRewriteSchemaTypeCheck(self):
+    schema = json.loads(test_util.GetJobsSchemaString())
+    self.assertTrue(isinstance(schema, types.ListType))
+    new_schema = load_lib.RewriteSchema(schema)
+    self.assertTrue(isinstance(new_schema, schema.__class__))
+
+  def testRewriteSchemaWhenString(self):
+    """Regression test on RewriteSchema() sloppy behavior on inputs."""
+    schema = test_util.GetJobsSchemaString()
+    self.assertTrue(isinstance(schema, types.StringTypes))
+    # set up the for loop to wrongfully iterate only once, a single char,
+    # instead of supplying the entire string and needing to break the
+    # flow after _RewriteField()
+    schema = schema[0]
+    self.mox.StubOutWithMock(load_lib, '_RewriteField')
+    load_lib._RewriteField(schema, []).AndReturn(None)
+    self.mox.ReplayAll()
+    new_schema = load_lib.RewriteSchema(schema)
+    self.mox.VerifyAll()
+    self.assertEqual(new_schema, [])
+
   def testValidateCsvDataFile(self):
     schema = json.loads(test_util.GetCarsSchemaString())
     infile = self._WriteTempCarsCsvFile()
@@ -581,6 +603,59 @@ class LoadLibraryTest(googletest.TestCase):
       self.assertEqual(row, csv_reader[i])
       i += 1
     self.mox.VerifyAll()
+
+  def testValidateDataType(self):
+    """Test _ValidateDataType() against different inputs."""
+    nothing = 'xnothingx'
+
+    tests = [
+        ['3.0', 'float', nothing, nothing],
+        ['x', 'float', nothing, load_lib.EncryptConvertError],
+
+        ['3', 'integer', nothing, nothing],
+        ['y', 'integer', nothing, load_lib.EncryptConvertError],
+
+        ['abc', 'string', None, nothing],
+        ['junk', 'invalid type_value', None, nothing],
+    ]
+
+    for data_value, type_value, expect_output, expect_exception in tests:
+      if expect_exception is not nothing:
+        self.assertRaises(
+            expect_exception, load_lib._ValidateDataType, type_value,
+            data_value)
+      else:
+        output = load_lib._ValidateDataType(type_value, data_value)
+        if expect_output is not nothing:
+          self.assertEqual(output, expect_output)
+        else:
+          self.assertTrue(output is None)
+
+  def testConvertJsonDataFileWhenTypeChanges(self):
+    """Test ConvertJsonDataFile()."""
+    infile = tempfile.NamedTemporaryFile(mode='rw+')
+    outfile = tempfile.NamedTemporaryFile(mode='w+')
+    json_before = '{"age": "22", "fullname": "John Doe"    }\n'
+    # change: 22 is now an int.
+    json_after = {'age': 22, 'fullname': 'John Doe'}
+    infile.seek(0)
+    infile.write(json_before)
+    infile.seek(0)
+    master_key = '%s' % _MASTER_KEY
+    schema = [
+        {
+            'mode': 'nullable', 'name': 'age', 'type': 'integer',
+            'encrypt': 'none'},
+        {
+            'mode': 'nullable', 'name': 'fullname', 'type': 'string',
+            'encrypt': 'none'},
+    ]
+    table_id = '%s' % _TABLE_ID
+    load_lib.ConvertJsonDataFile(
+        schema, master_key, table_id, infile.name, outfile.name)
+    # compare as dict because key order is flaky in str(dict)
+    json_output = json.loads(outfile.read())
+    self.assertEqual(json_output, json_after)
 
 
 def main(_):

@@ -13,19 +13,36 @@
 import hashlib
 import hmac
 import os
+import platform
 import sys
 
 from Crypto.Cipher import AES
 
 
 DEFAULT_PRF_OUTPUT_LEN = 16
+_f_urandom_fh = None
+_f_urandom_func = None
+_F_URANDOM_BUFLEN = 8192
 
 
-def GetRandBytes(size):
+def GetRandBytes(size, _open=open):  # pylint: disable=invalid-name
   """Returns size number of bytes."""
+  global _f_urandom_fh
+  global _f_urandom_func
+
   if size <= 0:
     raise ValueError('Size has to be positive.')
-  return os.urandom(size)
+
+  if _f_urandom_func is not None:
+    return _f_urandom_func(size)
+
+  if platform.uname()[0] == 'Linux':
+    _f_urandom_fh = _open('/dev/urandom', 'rb', _F_URANDOM_BUFLEN)
+    _f_urandom_func = _f_urandom_fh.read  # same args and return
+  else:
+    _f_urandom_func = os.urandom
+
+  return GetRandBytes(size)
 
 
 def PRF(key, input_str, output_len=DEFAULT_PRF_OUTPUT_LEN, hashfunc='sha1'):
