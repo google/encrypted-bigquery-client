@@ -315,6 +315,10 @@ def _EBQParser(clauses):
   def AddWithin(tokens):
     clauses['WITHIN'][len(clauses['SELECT'])] = tokens[0]
 
+  def AddJoinArgument(tokens):
+    clauses[tokens[0]].append(list(temp_stack))
+    temp_stack[:] = []
+
   temp_stack = []
 
   as_kw = pp.CaselessKeyword('AS')
@@ -322,6 +326,8 @@ def _EBQParser(clauses):
   within_kw = pp.CaselessKeyword('WITHIN')
   flatten_kw = pp.CaselessKeyword('FLATTEN')
   from_kw = pp.CaselessKeyword('FROM')
+  join_kw = pp.CaselessKeyword('JOIN')
+  join_on_kw = pp.CaselessKeyword('ON')
   where_kw = pp.CaselessKeyword('WHERE')
   having_kw = pp.CaselessKeyword('HAVING')
   order_kw = pp.CaselessKeyword('ORDER BY')
@@ -345,7 +351,7 @@ def _EBQParser(clauses):
   within_expr = math_expr + pp.Optional(within_kw + within_label)
   alias_expr = within_expr + pp.Optional((
       (as_kw + alias_label) |
-      (~from_kw + ~where_kw + ~having_kw + ~order_kw + ~group_kw + ~limit_kw +
+      (~from_kw + ~where_kw + ~group_kw + ~having_kw + ~order_kw + ~limit_kw +
        alias_label)))
   select_expr = (
       (select_kw + alias_expr).setParseAction(AddSelectArgument) +
@@ -355,17 +361,19 @@ def _EBQParser(clauses):
                                label + pp.Literal(',') + label +
                                pp.Literal(')') + pp.Literal(
                                    ')'))).setParseAction(AddAll)
-  # TODO(user): Add join.
   from_expr = select_expr + pp.Optional((
       from_kw + (flatten_expr | push_label)).setParseAction(AddArgument))
-  where_expr = from_expr + pp.Optional((
+  join_expr = from_expr + pp.ZeroOrMore((
+      join_kw + push_label + join_on_kw +
+      _MathParser(temp_stack)).setParseAction(AddJoinArgument))
+  where_expr = join_expr + pp.Optional((
       where_kw + _MathParser(temp_stack)).setParseAction(AddArgument))
-  having_expr = where_expr + pp.Optional((
-      having_kw + _MathParser(temp_stack)).setParseAction(AddArgument))
-  group_expr = having_expr + pp.Optional((
+  group_expr = where_expr + pp.Optional((
       group_kw + push_label + pp.ZeroOrMore(
           pp.Literal(',') + push_label)).setParseAction(AddArgument))
-  order_expr = group_expr + pp.Optional((
+  having_expr = group_expr + pp.Optional((
+      having_kw + _MathParser(temp_stack)).setParseAction(AddArgument))
+  order_expr = having_expr + pp.Optional((
       order_kw + order_label + pp.ZeroOrMore(
           pp.Literal(',') + order_label)).setParseAction(AddArgument))
   limit_expr = order_expr + pp.Optional((
@@ -392,9 +400,10 @@ def ParseQuery(query):
       'AS': {},
       'WITHIN': {},
       'FROM': [],
+      'JOIN': [],
       'WHERE': [],
-      'HAVING': [],
       'GROUP BY': [],
+      'HAVING': [],
       'ORDER BY': [],
       'LIMIT': [],
   }

@@ -14,7 +14,12 @@ import ipaddr
 
 import bigquery_client
 
-EBQ_VERSION = '1.0'
+# This version is written into the table description.
+# The ebq client compares this value to the one stored there when performing
+# ebq operations.
+# Incrementing it will e.g. break compatibility between old clients and
+# newer datasets.
+EBQ_TABLE_VERSION = '1.0'
 
 # Adds distinction to avoid collisions between internal naming and user naming.
 _DISTINCT_STRING = 'p698000442118338_'
@@ -47,14 +52,15 @@ FUNCTION_PREFIX = _DISTINCT_STRING + 'FUNCTION_'
 UNENCRYPTED_ALIAS_PREFIX = _DISTINCT_STRING + 'ue'
 
 GROUP_CONCAT_PREFIX = 'GROUP_CONCAT('
-PAILLIER_SUM_PREFIX = 'TO_BASE64(STRING(PAILLIER_SUM(FROM_BASE64('
+PAILLIER_SUM_PREFIX = 'TO_BASE64(BYTES(PAILLIER_SUM(FROM_BASE64('
 
 # =============================================================================
 # = EBQ miscellaneous constants.
 # =============================================================================
 COUNT_STAR = _DISTINCT_STRING + 'COUNT_STAR'
-PAILLIER_SUM_STRING = 'TO_BASE64(STRING(PAILLIER_SUM(FROM_BASE64(%s), \'%s\')))'
-PERIOD_REPLACEMENT = _DISTINCT_STRING + 'ebq_period_replacement_'
+PAILLIER_SUM_STRING = 'TO_BASE64(BYTES(PAILLIER_SUM(FROM_BASE64(%s), \'%s\')))'
+# EPR stands for ebq period replacement.
+PERIOD_REPLACEMENT = '_' + _DISTINCT_STRING + 'EPR_'
 
 AGGREGATION_FUNCTIONS = [
     'AVG',
@@ -89,6 +95,29 @@ BIGQUERY_CONSTANTS = {
 # =============================================================================
 # = EBQ types.
 # =============================================================================
+class AliasToken(object):
+  """Interface class to mix-in alias to any other class."""
+
+  @property
+  def alias(self):
+    return getattr(self, '_alias', None)
+
+  @alias.setter
+  def alias(self, value):
+    self._alias = value
+
+  def SetAlias(self, value):
+    self.alias = value
+    return self
+
+  def __str__(self):
+    a = getattr(self, '_alias', None)
+    if a is not None:
+      return '%s AS %s' % (str.__str__(self), str(a))
+    else:
+      return str.__str__(self)
+
+
 class CountStarToken(str):
   """Typing for count star."""
 
@@ -96,12 +125,12 @@ class CountStarToken(str):
     return str.__new__(cls, '*')
 
 
-class AggregationQueryToken(str):
+class AggregationQueryToken(AliasToken, str):
   """Typing for aggregations that need to be queried."""
   pass
 
 
-class UnencryptedQueryToken(str):
+class UnencryptedQueryToken(AliasToken, str):
   """Typing for unencrypted queries that need to be queried."""
   pass
 
@@ -126,7 +155,7 @@ class StringLiteralToken(LiteralToken):
         cls, str_value, str_value[1:-1])
 
 
-class FunctionToken(str):
+class FunctionToken(AliasToken, str):
   """Base type for functions."""
 
   def __new__(cls, value, num_args):
@@ -155,20 +184,30 @@ class OperatorToken(FunctionToken):
     return super(OperatorToken, cls).__new__(cls, value.lower(), num_args)
 
 
-class FieldToken(str):
+class FieldToken(AliasToken, str):
 
   def __new__(cls, value):
     return str.__new__(cls, value)
 
+  @property
+  def original_name(self):
+    return getattr(self, '_original_name', None)
+
+  @original_name.setter
+  def original_name(self, value):
+    self._original_name = value
+
 
 class EncryptedToken(FieldToken):
 
-  def __new__(cls, value, prefix):
+  def __new__(cls, value, prefix, related=None):
     cls.original_name = value
     value = value.split('.')
     value[-1] = '%s%s' % (prefix, value[-1])
     value = '.'.join(value)
-    return super(EncryptedToken, cls).__new__(cls, value)
+    o = super(EncryptedToken, cls).__new__(cls, value)
+    o.related = related
+    return o
 
 
 class HomomorphicFloatToken(EncryptedToken):
@@ -194,8 +233,9 @@ class ProbabilisticToken(EncryptedToken):
 
 class PseudonymToken(EncryptedToken):
 
-  def __new__(cls, value):
-    return super(PseudonymToken, cls).__new__(cls, value, PSEUDONYM_PREFIX)
+  def __new__(cls, value, related=None):
+    return super(PseudonymToken, cls).__new__(
+        cls, value, PSEUDONYM_PREFIX, related=related)
 
 
 class SearchwordsToken(EncryptedToken):
@@ -384,9 +424,12 @@ def _ConvertToDatetimeObject(date_string):
         'Not a valid timestamp object.', None, None, None)
 
 
-def _ConvertFromTimestamp(timestamp):
+def _ConvertFromTimestamp(timestamp, utc=True):
   try:
-    return datetime.datetime.fromtimestamp(timestamp)
+    if utc:
+      return datetime.datetime.utcfromtimestamp(timestamp)
+    else:
+      return datetime.datetime.fromtimestamp(timestamp)
   except ValueError as e:
     raise bigquery_client.BigqueryInvalidQueryError(e, None, None, None)
 
@@ -482,8 +525,6 @@ def DayOfYear(timestamp):
 
 def FormatUTCUsec(unix_timestamp):
   unix_seconds = float(unix_timestamp) / 1e6
-  # Given time in PST/PDT, convert to UTC.
-  unix_seconds += _TIME_DIFFERENCE_UTC_PST
   return str(_ConvertFromTimestamp(unix_seconds))
 
 
@@ -508,8 +549,6 @@ def Month(timestamp):
 
 def MsecToTimestamp(expr):
   seconds = float(expr) / 1e3
-  # Time given in PST/PDT, convert to UTC.
-  seconds += _TIME_DIFFERENCE_UTC_PST
   return _ConvertFromTimestamp(seconds).strftime('%Y-%m-%d %H:%M:%S')
 
 
@@ -540,10 +579,8 @@ def Quarter(timestamp):
 
 
 def SecToTimestamp(seconds):
-  # For some reason, there is an extra hour time difference in this function.
-  return _ConvertFromTimestamp(
-      seconds + _TIME_DIFFERENCE_UTC_PST + 3600).strftime(
-          '%Y-%m-%d %H:%M:%S')
+  return _ConvertFromTimestamp(seconds).strftime(
+      '%Y-%m-%d %H:%M:%S UTC')
 
 
 def Second(timestamp):
@@ -590,8 +627,7 @@ def ToBase64(data):
 
 def UsecToTimestamp(expr):
   seconds = float(expr) / 1000000
-  return _ConvertFromTimestamp(seconds + _TIME_DIFFERENCE_UTC_PST).strftime(
-      '%Y-%m-%d %H:%M:%S')
+  return _ConvertFromTimestamp(seconds).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def UTCUsecToDay(seconds):

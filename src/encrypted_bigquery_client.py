@@ -10,6 +10,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+import zlib
 
 
 from pyparsing import ParseException
@@ -59,10 +60,11 @@ class EncryptedTablePrinter(bq.TablePrinter):
       fields: Column names for table.
       rows: Table values for each column.
     """
+    manifest = getattr(self, 'manifest', None)
     decrypted_queries = _DecryptRows(
         fields, rows, self.master_key, self.table_id, self.schema,
         self.encrypted_queries, self.aggregation_queries,
-        self.unencrypted_queries)
+        self.unencrypted_queries, manifest=manifest)
     table_values = _ComputeRows(self.table_expressions, decrypted_queries)
     if self.order_by_clause:
       table_values = self.order_by_clause.SortTable(self.column_names,
@@ -147,6 +149,33 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
           None)
     return hashed_key, version_number, schema
 
+  def _LoadJobStatistics(self, manifest, job):
+    """Load statistics from the bq job into manifest.
+
+    Args:
+      manifest: query_lib.QueryManifest instance, to load stats into
+      job: dict, job stats out of BQ API
+    """
+    try:
+      job_state = job['status']['state']
+      if job_state != 'DONE':
+        return
+
+      query_plans = job['statistics']['query']['queryPlan']
+      if len(query_plans) < 1:
+        return
+
+      records_written = int(query_plans[-1][manifest.RECORDS_WRITTEN])
+      if records_written < 0:
+        return
+
+      manifest.statistics[manifest.RECORDS_WRITTEN] = records_written
+
+    except KeyError:
+      return
+    except ValueError:
+      return
+
   def Load(self, destination_table, source, schema=None, **kwds):
     """Encrypt the given data and then load it into BigQuery.
 
@@ -198,12 +227,14 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
     if hashed_master_key != hashed_table_key:
       raise bigquery_client.BigqueryAccessDeniedError(
           'Invalid master key for this table.', None, None, None)
-    if table_version != util.EBQ_VERSION:
+    if table_version != util.EBQ_TABLE_VERSION:
       raise bigquery_client.BigqueryNotFoundError(
           'Invalid table version.', None, None, None)
     # TODO(user): Generate a different key.
     cipher = ecrypto.ProbabilisticCipher(master_key)
-    table_schema = cipher.Decrypt(base64.b64decode(table_schema))
+    table_schema = cipher.Decrypt(base64.b64decode(table_schema), raw=True)
+    table_schema = zlib.decompress(table_schema)
+    table_schema = table_schema.decode('utf-8')
     table_schema = json.loads(table_schema)
     if table_schema != orig_schema:
       raise bigquery_client.BigqueryAccessDeniedError(
@@ -254,19 +285,26 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
       if hashed_master_key != hashed_table_key:
         raise bigquery_client.BigqueryAccessDeniedError(
             'Invalid master key for this table.', None, None, None)
-      if table_version != util.EBQ_VERSION:
+      if table_version != util.EBQ_TABLE_VERSION:
         raise bigquery_client.BigqueryNotFoundError(
             'Invalid table version.', None, None, None)
       cipher = ecrypto.ProbabilisticCipher(master_key)
-      orig_schema = json.loads(cipher.Decrypt(base64.b64decode(table_schema)))
+      orig_schema = zlib.decompress(
+          cipher.Decrypt(base64.b64decode(table_schema), raw=True))
+      orig_schema = json.loads(orig_schema.decode('utf-8'))
     else:
       table_id = None
       orig_schema = []
+
+    manifest = query_lib.QueryManifest.Generate()
     rewritten_query, print_args = query_lib.RewriteQuery(clauses,
                                                          orig_schema,
-                                                         master_key, table_id)
+                                                         master_key,
+                                                         table_id,
+                                                         manifest)
     job = super(EncryptedBigqueryClient, self).Query(
         rewritten_query, **kwds)
+    self._LoadJobStatistics(manifest, job)
 
     printer = EncryptedTablePrinter(**print_args)
     bq.Factory.ClientTablePrinter.SetTablePrinter(printer)
@@ -299,7 +337,9 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
               'Invalid master key for this table.', None, None, None)
         cipher = ecrypto.ProbabilisticCipher(master_key)
         real_schema = json.dumps(load_lib.RewriteSchema(schema))
-        table_schema = base64.b64encode(cipher.Encrypt(unicode(real_schema)))
+        real_schema = str.encode('utf-8')
+        table_schema = base64.b64encode(
+            cipher.Encrypt(zlib.compress(real_schema)))
       description = util.ConstructTableDescription(
           description, hashed_table_key, table_version, table_schema)
 
@@ -338,11 +378,13 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
     hashed_key = base64.b64encode(hashlib.sha1(master_key).digest())
     cipher = ecrypto.ProbabilisticCipher(master_key)
     pretty_schema = json.dumps(schema)
-    encrypted_schema = base64.b64encode(cipher.Encrypt(unicode(pretty_schema)))
+    pretty_schema = pretty_schema.encode('utf-8')
+    pretty_schema = zlib.compress(pretty_schema)
+    encrypted_schema = base64.b64encode(cipher.Encrypt(pretty_schema))
     if description is None:
       description = ''
     new_description = util.ConstructTableDescription(
-        description, hashed_key, util.EBQ_VERSION, encrypted_schema)
+        description, hashed_key, util.EBQ_TABLE_VERSION, encrypted_schema)
     new_schema = load_lib.RewriteSchema(schema)
     super(EncryptedBigqueryClient, self).CreateTable(
         reference, ignore_existing, new_schema, new_description, friendly_name,
@@ -350,7 +392,8 @@ class EncryptedBigqueryClient(bigquery_client.BigqueryClient):
 
 
 def _DecryptRows(fields, rows, master_key, table_id, schema, query_list,
-                 aggregation_query_list, unencrypted_query_list):
+                 aggregation_query_list, unencrypted_query_list,
+                 manifest=None):
   """Decrypts all values in rows.
 
   Arguments:
@@ -362,7 +405,7 @@ def _DecryptRows(fields, rows, master_key, table_id, schema, query_list,
     query_list: List of fields that were queried.
     aggregation_query_list: List of aggregations of fields that were queried.
     unencrypted_query_list: List of unencrypted expressions.
-
+    manifest: optional, query_lib.QueryManifest instance.
   Returns:
     A dictionary that returns for each query, a list of decrypted values.
 
@@ -398,9 +441,24 @@ def _DecryptRows(fields, rows, master_key, table_id, schema, query_list,
   for i in xrange(len(unencrypted_query_list)):
     queried_values['%s%d_' % (util.UNENCRYPTED_ALIAS_PREFIX, i)] = []
 
+  # If a manifest is supplied rewrite the column names according to any
+  # computed aliases that were used. Otherwise, resort to the old scheme
+  # of substituting the '.' in multidimensional schemas in/out.
+  if manifest is not None:
+    for i in xrange(len(fields)):
+      # TODO(user): This is a hash lookup on every column name.
+      # The lookup is efficient and the column names are sufficiently random
+      # as compared to likely human language column names such that false
+      # hits should not be possible. However this may need future revision.
+      n = manifest.GetColumnNameForAlias(fields[i]['name'])
+      if n is not None:
+        fields[i]['name'] = n
+  else:
+    for i in xrange(len(fields)):
+      fields[i]['name'] = fields[i]['name'].replace(
+          util.PERIOD_REPLACEMENT, '.')
+
   for i in xrange(len(fields)):
-    fields[i]['name'] = fields[i]['name'].replace(util.PERIOD_REPLACEMENT,
-                                                  '.')
     encrypted_name = fields[i]['name'].split('.')[-1]
     if fields[i]['type'] == 'TIMESTAMP':
       queried_values[fields[i]['name']] = _GetTimestampValues(rows, i)
@@ -589,31 +647,48 @@ def _DecryptGroupConcatValues(field, table, column_index, ciphers, schema,
 
 
 def _GetTimestampValues(table, column_index):
+  """Returns new rows with timestamp values converted from float to string."""
   values = []
   for i in range(len(table)):
     if table[i][column_index] is None:
       value = util.LiteralToken('null', None)
     else:
-      value = util.StringLiteralToken(
-          '"%s"' % util.SecToTimestamp(float(table[i][column_index])))
+      f = float(table[i][column_index])  # this handles sci-notation too
+      s = util.SecToTimestamp(f)
+      value = util.LiteralToken('"%s"' % s, s)
     values.append(value)
-  return value
+  return values
 
 
-def _ComputeRows(new_postfix_stack, queried_values):
+def _ComputeRows(new_postfix_stack, queried_values, manifest=None):
   """Substitutes queries back to expressions and evaluates them.
 
-  Arguments:
+  Args:
     new_postfix_stack: All expressions for each column.
     queried_values: A dictionary that represents the queried values to a list
     of values that were received from server (all have been decrypted).
-
+    manifest: optional but recommended, query_lib.QueryManifest object.
   Returns:
     A new table with results of each expression after query substitution.
+  Raises:
+    BigqueryInvalidQueryError: When a query request has parsed the query
+      response and has determined the response is invalid.
   """
   table_values = []
+  num_rows = 0
+
   if queried_values:
-    num_rows = len(queried_values[queried_values.keys()[0]])
+    # Try to obtain the number of rows (records) returned from the manifest.
+    if manifest is not None:
+      num_rows = manifest.statistics.get(manifest.RECORDS_WRITTEN, 0)
+
+    # No manifest or no value obtained. Try to find the length of the FIRST
+    # key:value pair where len(value) > 0.
+    if num_rows <= 0:
+      for k in queried_values:
+        if len(queried_values[k]) > num_rows:
+          num_rows = len(queried_values[k])
+          break
   else:
     for stack in new_postfix_stack:
       ans = interpreter.Evaluate(stack)
@@ -622,22 +697,32 @@ def _ComputeRows(new_postfix_stack, queried_values):
       table_values.append(str(ans))
     return [table_values]
 
+  # No num_rows able to be found or calculated, or num_rows too few
+  if num_rows <= 0:
+    return []
+
   # Substitute queried values back into postfix stacks and evaluate them.
-  for i in range(num_rows):
+  for i in xrange(num_rows):
     row_values = []
-    for j in range(len(new_postfix_stack)):
+    for j in xrange(len(new_postfix_stack)):
       temp_stack = list(new_postfix_stack[j])
       for k in xrange(len(temp_stack)):
         if (isinstance(temp_stack[k], util.AggregationQueryToken) or
             isinstance(temp_stack[k], util.UnencryptedQueryToken) or
             isinstance(temp_stack[k], util.FieldToken)):
-          if str(temp_stack[k]) not in queried_values:
+          k_use = None
+          for k_try in [temp_stack[k].alias, temp_stack[k]]:
+            if k_try and k_try in queried_values:
+              k_use = k_try
+          if not k_use:
             raise bigquery_client.BigqueryInvalidQueryError(
-                '%s column does not exist.' % temp_stack[k], None, None, None)
-          temp_stack[k] = queried_values[str(temp_stack[k])][i]
+                'Required %s column does not exist.' % temp_stack[k],
+                None, None, None)
+          temp_stack[k] = queried_values[k_use][i]
       ans = interpreter.Evaluate(temp_stack)
       if ans is None:
         ans = 'NULL'
       row_values.append(str(ans))
     table_values.append(row_values)
+
   return table_values

@@ -184,7 +184,7 @@ query: `CONTAINS 'Moon Roof'` would also return the same result.
 #### Query with private WHERE condition using (equality)
 
 ```
-$ ebq query --master_key_filename=key_file "SELECT Year, Model, Price, Invoice_Price FROM testdataset.cars WHERE Make == `Chevy' "
+$ ebq query --master_key_filename=key_file "SELECT Year, Model, Price, Invoice_Price FROM testdataset.cars WHERE Make == 'Chevy' "
 +------+-----------------------------------------------------+-----------+------------------+
 | Year |                                           Model     |  Price    | Invoice_Price    |
 +------+-----------------------------------------------------+-----------+------------------+

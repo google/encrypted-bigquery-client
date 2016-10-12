@@ -20,6 +20,7 @@ import test_util
 FLAGS = flags.FLAGS
 
 _TABLE_ID = '1'
+_RELATED = 'cars_name'  # used for related= tests
 
 
 
@@ -175,18 +176,46 @@ class QueryInterpreterTest(googletest.TestCase):
         interpreter.RewriteSelectionCriteria(stack, schema, key, _TABLE_ID),
         '(' + util.PSEUDONYM_PREFIX +
         'Make == "HS57DHbh2KlkqNJREmu1wQ==")')
+
+    # begin: tests about 'related' schema option
+
+    schema2 = test_util.GetCarsSchema()
+    for field in schema2:
+      if field['name'] == 'Make':
+        field['related'] = 'cars_name'
+
+    # value is deterministic calc with related instead of _TABLE_ID
+    stack = [util.PseudonymToken('Make', related=_RELATED),
+             util.StringLiteralToken('"Hello"'), util.OperatorToken('==', 2)]
+    self.assertEqual(
+        interpreter.RewriteSelectionCriteria(stack, schema2, key, _TABLE_ID),
+        '(' + util.PSEUDONYM_PREFIX +
+        'Make == "sspWKAH/NKuUyX8ji1mmSw==")')
+
+    # token with related attribute makes no sense if schema doesn't have it
+    stack = [util.StringLiteralToken('"Hello"'),
+             util.PseudonymToken('Make', related=_RELATED),
+             util.OperatorToken('==', 2)]
+    self.assertRaises(
+        bigquery_client.BigqueryInvalidQueryError,
+        interpreter.RewriteSelectionCriteria, stack, schema, key, _TABLE_ID)
+
+    # end: tests about 'related' schema option
+
     stack = [util.StringLiteralToken('"Hello"'), util.PseudonymToken('Make'),
              util.OperatorToken('==', 2)]
     self.assertEqual(
         interpreter.RewriteSelectionCriteria(stack, schema, key, _TABLE_ID),
         '("HS57DHbh2KlkqNJREmu1wQ==" == ' + util.PSEUDONYM_PREFIX +
         'Make)')
+
     stack = [util.StringLiteralToken('"Hello"'), util.PseudonymToken('Make'),
              util.OperatorToken('!=', 2)]
     self.assertEqual(
         interpreter.RewriteSelectionCriteria(stack, schema, key, _TABLE_ID),
         '("HS57DHbh2KlkqNJREmu1wQ==" != ' + util.PSEUDONYM_PREFIX +
         'Make)')
+
     stack = [util.PseudonymToken('Make'),
              util.PseudonymToken('Make2'), util.OperatorToken('==', 2)]
     self.assertEqual(
@@ -333,14 +362,32 @@ class QueryInterpreterTest(googletest.TestCase):
     self.assertRaises(bigquery_client.BigqueryInvalidQueryError,
                       interpreter.CheckValidSumAverageArgument, stack)
 
-  def testToBase64(self):
+  def testToBase64Ascii(self):
     """Test built-in function TO_BASE64(string)."""
-    stack = [util.StringLiteralToken('"hello test"'),
+    ascii_str = 'hello test'
+    ascii_str_b64 = 'aGVsbG8gdGVzdA=='
+    stack = [util.StringLiteralToken('"%s"' % ascii_str),
              util.BuiltInFunctionToken('to_base64')]
-    self.assertEqual(interpreter.Evaluate(stack), 'aGVsbG8gdGVzdA==')
+    self.assertEqual(interpreter.Evaluate(stack), ascii_str_b64)
+
+  def testToBase64Utf8(self):
+    """Test built-in function TO_BASE64(utf8 string)."""
+    unicode_str = u'M\u00fcnchen'
+    unicode_str_b64 = 'TcO8bmNoZW4='
+    stack = [util.StringLiteralToken('"%s"' % unicode_str.encode('utf-8')),
+             util.BuiltInFunctionToken('to_base64')]
+    self.assertEqual(interpreter.Evaluate(stack), unicode_str_b64)
+
+  def testToBase64RawBytes(self):
+    """Test built-in function TO_BASE64(arbitrary bytes)."""
+    bytes_str = '\xb4\x00\xb0\x09\xcd\x10'
+    bytes_str_b64 = 'tACwCc0Q'
+    stack = [util.StringLiteralToken('"%s"' % bytes_str),
+             util.BuiltInFunctionToken('to_base64')]
+    self.assertEqual(interpreter.Evaluate(stack), bytes_str_b64)
 
   def testFromBase64(self):
-    """Don't implement FROM_BASE64() until BigQuery has BYTES type."""
+    """Don't implement FROM_BASE64() on client side."""
     base64_str = 'aGVsbG8gdGVzdA=='  # "hello test"
     stack = [util.StringLiteralToken('"%s"' % base64_str),
              util.BuiltInFunctionToken('from_base64')]

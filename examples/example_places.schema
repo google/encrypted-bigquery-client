@@ -11,7 +11,9 @@
     {"name": "place", "type": "string", "mode": "required", "encrypt":
     "searchwords", "searchwords_separator": "/"},
     {"name": "numberOfYears", "type": "float", "mode": "required", "encrypt":
-    "homomorphic"}
+    "homomorphic"},
+    {"name": "lat", "type": "float", "mode": "nullable", "encrypt": "none"},
+    {"name": "long", "type": "float", "mode": "nullable", "encrypt": "none"},
   ]},
   {"name": "spouse", "type": "record", "mode": "required", "fields":
   [

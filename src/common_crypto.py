@@ -75,17 +75,22 @@ def PRF(key, input_str, output_len=DEFAULT_PRF_OUTPUT_LEN, hashfunc='sha1'):
   if not isinstance(input_str, str):
     raise ValueError('Expected str type for input_str, but got: %s'
                      % type(input_str))
+  try:
+    hasher = hashlib.new(hashfunc)
+  except ValueError:
+    raise  # something like "unsupported hash type {hashfunc}"
+  hasher = getattr(hashlib, hashfunc)
   count = 0
   output = []
   for _ in xrange(output_len / 16):
     output.append(hmac.new(key, IntToFixedSizeString(count) + input_str,
-                           hashlib.__getattribute__(hashfunc)).digest()[:16])
+                           hasher).digest()[:16])
     count += 1
   # if output_len is not a multiple of 16 then add the last partial block.
   if output_len % 16 != 0:
     output.append(hmac.new(
         key, IntToFixedSizeString(count) + input_str,
-        hashlib.__getattribute__(hashfunc)).digest()[:output_len % 16])
+        hasher).digest()[:output_len % 16])
   return ''.join(output)
 
 

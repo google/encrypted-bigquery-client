@@ -91,7 +91,9 @@ _PLACES_SCHEMA = """[
     {"name": "place", "type": "string", "mode": "required", "encrypt":
     "searchwords", "searchwords_separator": "/"},
     {"name": "numberOfYears", "type": "float", "mode": "required", "encrypt":
-    "homomorphic"}
+    "homomorphic"},
+    {"name": "lat", "type": "float", "mode": "nullable", "encrypt": "none"},
+    {"name": "long", "type": "float", "mode": "nullable", "encrypt": "none"}
   ]},
   {"name": "spouse", "type": "record", "mode": "required", "fields":
   [
@@ -107,7 +109,8 @@ _PLACES_SCHEMA = """[
 _PLACES_JSON = (
     '{"kind": "person", "fullName": "John Doe", "age": 22, "gender": "Male", '
     '"citiesLived": [{ "place": "Seattle", "numberOfYears": 5.1}, '
-    '{"place": "Stockholm", "numberOfYears": 6.0}], '
+    '{"place": "Stockholm", "numberOfYears": 6.0, '
+    '"lat": "1.0", "long": "2.0"}], '
     '"spouse": {"spouseName": "Jane Doe", "yearsMarried": 0.5, '
     '"spouseAge": 23}}\n'
     '{"kind": "person", "fullName": "Jane Austen", "age": 24, '
@@ -126,6 +129,7 @@ _PLACES_JSON = (
 )
 
 _TEST_MASTER_KEY = 'GL9pK+nrHIxSGHMgGUxLmQ=='
+_TEST_RELATED = '123'
 
 
 def GetCarsSchema():
@@ -154,6 +158,10 @@ def GetPlacesSchemaString():
 
 def GetMasterKey():
   return _TEST_MASTER_KEY
+
+
+def GetRelated():
+  return _TEST_RELATED
 
 
 def GetCarsCsv():

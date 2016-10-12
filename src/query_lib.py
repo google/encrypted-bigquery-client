@@ -7,11 +7,119 @@
 
 from copy import copy
 
+import hashlib
+import uuid
 
 import bigquery_client
 import common_util as util
 import ebq_crypto as ecrypto
 import query_interpreter as interpreter
+
+
+class QueryManifest(object):
+  """Class used to create a manifest/metadata about a query.
+
+  Generating unique hashes as column aliases is being done only
+  to generate sufficiently unique alias names. There is no attempt
+  being made to obscure the column name for any privacy related reason.
+  """
+
+  HASH_PREFIX = 'HP'
+  RECORDS_WRITTEN = 'recordsWritten'
+
+  def __init__(self, uuid_cls=None, hash_cls=None):
+    self.manifest = {
+        'columns': {},
+        'column_aliases': {},
+        'statistics': {
+            self.RECORDS_WRITTEN: None,
+        },
+    }
+    self.uuid = str(uuid_cls())
+    self.base_hasher = hash_cls(self.uuid)
+
+  @classmethod
+  def Generate(cls, unused_schema=None):
+    """Generate a QueryManifest instance."""
+    qm = cls(uuid_cls=uuid.uuid4, hash_cls=hashlib.sha256)
+    return qm
+
+  def _SetRawColumnAlias(self, column_name, column_alias):
+    """Set a column name, column alias pair.
+
+    Args:
+      column_name: str, original column name.
+      column_alias: str, column alias for this column name.
+    """
+    self.manifest['column_aliases'][column_alias] = column_name
+    self.manifest['columns'][column_name] = column_alias
+
+  def _GetRawColumnName(self, column_alias):
+    """Get a column name for an alias in use.
+
+    Args:
+      column_alias: str, column alias to retrieve name for.
+    Returns:
+      str column_name if column_alias is defined, or None if not defined.
+    """
+    return self.manifest['column_aliases'].get(column_alias, None)
+
+  def GenerateColumnAlias(self, column_name):
+    """Returns a column alias for the given column name.
+
+    Args:
+      column_name: str
+    Returns:
+      str, column alias that is safe for SQL alias usage (see HASH_PREFIX)
+    """
+    hasher = self.base_hasher.copy()
+    hasher.update(column_name)
+    return '%s%s' % (self.HASH_PREFIX, hasher.hexdigest())
+
+  def GetColumnAliasForName(self, column_name, extras=None, generate=True):
+    """Returns the column alias for the given column name.
+
+    Args:
+      column_name: str
+      extras: list, default None, if an iterable is supplied then each
+        item is set as an additional column name->alias mapping, even though
+        only one alias->column_name (arg1) mapping exists.
+      generate: bool, default True, if true generate new aliases, otherwise
+        return None when alias is not yet generated.
+    Returns:
+      str, column alias
+    """
+    column_alias = self.manifest['columns'].get(column_name, None)
+    if column_alias is None:
+      if generate:
+        column_alias = self.GenerateColumnAlias(column_name)
+        if extras is None:
+          self._SetRawColumnAlias(column_name, column_alias)
+        else:
+          for extra_column_name in extras:
+            self._SetRawColumnAlias(extra_column_name, column_alias)
+          # SUBTLE: Set the column_alias->column_name last so that
+          # column_alias does not map to any of the _extra_ column names,
+          # but rather only the column_name.
+          self._SetRawColumnAlias(column_name, column_alias)
+    return column_alias
+
+  def GetColumnNameForAlias(self, column_alias):
+    """Returns the column name for the given column alias.
+
+    Args:
+      column_alias: str
+    Returns:
+      str, column name
+    """
+    return self._GetRawColumnName(column_alias)
+
+  @property
+  def statistics(self):
+    return self.manifest['statistics']
+
+  def __str__(self):
+    return '[%s:%s %s]' % (self.__class__.__name__, id(self), self.manifest)
 
 
 class _Clause(object):
@@ -99,7 +207,11 @@ class _SelectClause(_Clause):
       raise ValueError('Invalid as clause.')
     if not isinstance(self.within_clause, _WithinClause):
       raise ValueError('Invalid within clause.')
+    manifest = getattr(self, 'manifest', None)
     temp_argument = copy(self._argument)
+    # TODO(user): A different approach to handling aliases could be
+    # to add their usage into this rewriting function. It would be
+    # more universal but trickier to code.
     self._table_expressions = (
         _RewritePostfixExpressions(temp_argument,
                                    self.as_clause.GetOriginalArgument(),
@@ -110,12 +222,15 @@ class _SelectClause(_Clause):
                                    self.within_clause.GetOriginalArgument()))
     self._aggregation_queries = (
         _ExtractAggregationQueries(self._table_expressions,
-                                   self.within_clause.GetOriginalArgument()))
-    self._encrypted_queries = _ExtractFieldQueries(self._table_expressions)
+                                   self.within_clause.GetOriginalArgument(),
+                                   self.as_clause.GetOriginalArgument()))
+    self._encrypted_queries = _ExtractFieldQueries(
+        self._table_expressions, self.as_clause.GetOriginalArgument(),
+        manifest)
     all_queries = copy(self._aggregation_queries)
     all_queries.extend(self._encrypted_queries)
     all_queries.extend(self._unencrypted_queries)
-    return 'SELECT %s' % ', '.join(all_queries)
+    return 'SELECT %s' % ', '.join(map(str, all_queries))
 
   def GetAggregationQueries(self):
     if self._aggregation_queries is None:
@@ -148,6 +263,37 @@ class _FromClause(_Clause):
     if not self._argument:
       return ''
     return 'FROM %s' % ', '.join(self._argument)
+
+
+class _JoinClause(_Clause):
+  """Class for rewriting JOIN clause arguments."""
+
+  def __init__(self, argument, **extra_args):
+    super(_JoinClause, self).__init__(argument, list, **extra_args)
+
+  def Rewrite(self):
+    """Rewrites where argument to send to BigQuery server.
+
+    Returns:
+      Rewritten where clause.
+
+    Raises:
+      ValueError: Invalid clause type or necessary argument not given.
+    """
+    if not self._argument:
+      return ''
+
+    joins = ['']
+    for one_join in self._argument:
+      join_expr = copy(one_join)[1:]
+      # TODO(user): This must validate table names to make this
+      # fully functional, and support aliased columns.
+      join_expr = interpreter.RewriteSelectionCriteria(
+          join_expr, self.schema, self.master_key, self.table_id)
+      join_clause = '%s ON %s' % (one_join[0], join_expr)
+      joins.append(join_clause)
+
+    return ' JOIN '.join(joins)[1:]
 
 
 class _HavingClause(_Clause):
@@ -281,8 +427,17 @@ class _GroupByClause(_Clause):
                 util.UNENCRYPTED_ALIAS_PREFIX,
                 unencrypted_expression_list.index(rewritten_argument[i])))
       else:
-        rewritten_argument[i] = rewritten_argument[i].replace(
-            '.', util.PERIOD_REPLACEMENT)
+        manifest = getattr(self, 'manifest', None)
+        if manifest is not None:
+          column_alias = manifest.GetColumnAliasForName(
+              rewritten_argument[i], generate=False)
+        else:
+          column_alias = None
+        if column_alias is not None:
+          rewritten_argument[i] = column_alias
+        else:
+          rewritten_argument[i] = rewritten_argument[i].replace(
+              '.', util.PERIOD_REPLACEMENT)
     return 'GROUP BY %s' % ', '.join(rewritten_argument)
 
 
@@ -375,7 +530,7 @@ class _LimitClause(_Clause):
     return ''
 
 
-def RewriteQuery(clauses, schema, master_key, table_id):
+def RewriteQuery(clauses, schema, master_key, table_id, manifest=None):
   """Rewrite original query so that it can be sent to the BigQuery server.
 
   Arguments:
@@ -383,6 +538,7 @@ def RewriteQuery(clauses, schema, master_key, table_id):
     schema: User defined field types.
     master_key: Master key for encryption/decryption.
     table_id: Used to generate proper keys.
+    manifest: optional, Used to store metadata about the query.
 
   Returns:
     Rewritten BigQuery-ready query.
@@ -409,14 +565,18 @@ def RewriteQuery(clauses, schema, master_key, table_id):
       'nsquare': nsquare,
   }
 
+  if manifest is not None:
+    extra_arguments['manifest'] = manifest
+
   # The order that clauses are rewritten matters. That is why pair of list
   # instead of a dict is used.
   clause_factory = [
       ('SELECT', _SelectClause),
       ('FROM', _FromClause),
+      ('JOIN', _JoinClause),
       ('WHERE', _WhereClause),
-      ('HAVING', _HavingClause),
       ('GROUP BY', _GroupByClause),
+      ('HAVING', _HavingClause),
       ('LIMIT', _LimitClause),
   ]
 
@@ -445,11 +605,15 @@ def RewriteQuery(clauses, schema, master_key, table_id):
       'column_names': column_names,
       'table_expressions': table_expressions,
   }
+
+  if manifest is not None:
+    print_arguments['manifest'] = manifest
+
   rewritten_query = ' '.join(rewritten_query_clauses)
   return rewritten_query, print_arguments
 
 
-def _ExtractAggregationQueries(stacks, within):
+def _ExtractAggregationQueries(stacks, within, alias):
   """Extracts all aggregations that need to be queried on the server.
 
   If the aggregation's expression was modified by a within clause, the within
@@ -458,7 +622,7 @@ def _ExtractAggregationQueries(stacks, within):
   Arguments:
     stacks: All postfix stacks with potential aggregation queries.
     within: Indicates which nodes/records to aggregate over for expressions.
-
+    alias: Column aliases in dict form {int index: alias string}.
   Returns:
     A list of all aggregation queries that need to be sent to the server.
   """
@@ -474,12 +638,14 @@ def _ExtractAggregationQueries(stacks, within):
                   '%s WITHIN %s' % (stacks[i][j], within[i])))
         else:
           query = stacks[i][j]
+        if i in alias:
+          query.alias = alias[i]
         if query not in query_list:
           query_list.append(query)
   return query_list
 
 
-def _ExtractFieldQueries(stacks):
+def _ExtractFieldQueries(stacks, alias=None, manifest=None, strize=False):
   """Extracts all labels that need to be queried on the server.
 
   Each encrypted field is aliased by the field name with all its period replaced
@@ -487,18 +653,40 @@ def _ExtractFieldQueries(stacks):
   retrieved after the query since BigQuery replaces all periods with underscores
   during the query to the server.
 
-  Arguments:
+  Args:
     stacks: All postfix stacks with potential fields.
+    alias: optional, Dictionary of aliases.
+    manifest: optional, a QueryManifest instance.
+    strize: optional, true if all columns should be str().
 
   Returns:
     A set of all queries that need to be sent to the server.
   """
   query_list = set()
+  i = 0
+  if alias is None:
+    alias = {}
   for stack in stacks:
     for s in stack:
       if isinstance(s, util.FieldToken):
-        query_list.add(
-            '%s AS %s' %(s, s.replace('.', util.PERIOD_REPLACEMENT)))
+        column = s
+        if alias and i in alias:
+          column_alias = alias[i]
+        elif manifest is not None:
+          original_name = column.original_name
+          if original_name is not None:
+            column_alias = manifest.GetColumnAliasForName(
+                column, extras=[original_name])
+          else:
+            column_alias = manifest.GetColumnAliasForName(column)
+        else:
+          column_alias = s.replace('.', util.PERIOD_REPLACEMENT)
+        if column_alias != column:
+          column.alias = column_alias
+        if strize:
+          column = str(column)
+        query_list.add(column)
+    i += 1
   return query_list
 
 
@@ -661,7 +849,10 @@ def _RewriteEncryptedFields(postfix_expressions, schema):
     if row['encrypt'].startswith('probabilistic'):
       return util.ProbabilisticToken(str(field))
     elif row['encrypt'] == 'pseudonym':
-      return util.PseudonymToken(str(field))
+      if row.get('related', None) is not None:
+        return util.PseudonymToken(str(field), related=row['related'])
+      else:
+        return util.PseudonymToken(str(field))
     elif row['encrypt'] == 'homomorphic' and row['type'] == 'integer':
       return util.HomomorphicIntToken(str(field))
     elif row['encrypt'] == 'homomorphic' and row['type'] == 'float':

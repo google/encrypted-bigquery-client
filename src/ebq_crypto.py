@@ -83,7 +83,7 @@ class _Cipher(object):
 
 
 class ProbabilisticCipher(_Cipher):
-  """Class for probabilistic encryption of unicode string."""
+  """Class for probabilistic encryption of unicode or any bytes str."""
 
   def __init__(self, key):
     """Cipher is initialized with a key of valid Aes key lengths."""
@@ -91,46 +91,54 @@ class ProbabilisticCipher(_Cipher):
     self._cipher = ccrypto.AesCbc(key)
 
   def Encrypt(self, plaintext):
-    """Encrypts Unicode string after utf-8 encoding it.
+    """Encrypts plaintext and returns base64 str.
 
     Args:
-      plaintext: a unicode string. Typically the usage is for encrypting csv
-        data that is read from a utf-8 encoded file.
+      plaintext: a unicode or str. If the plaintext is unicode it will
+        be encoded as utf-8 prior to encryption. If the plaintext is str
+        it will be encrypted as-is.
 
     Returns:
-      Utf8 encodes plaintext, cbc encrypts it with a random iv, and returns a
-      base64 encoding of it.
+      base64-wrapped version of encryption of plaintext,
+      potentially after encoding unicode characters in utf-8.
 
     Raises:
-      ValueError: when plaintext is empty or not a unicode string.
+      ValueError: when plaintext is empty or not a proper type.
     """
-    if not isinstance(plaintext, unicode):
-      raise ValueError('Expected unicode string type data but got: %s' %
+    if isinstance(plaintext, unicode):
+      plaintext = plaintext.encode('utf-8')
+
+    if not isinstance(plaintext, str):
+      raise ValueError('Expected str or unicode type plaintext but got: %s' %
                        type(plaintext))
     if not plaintext:
       raise ValueError('Input plaintext cannot be empty.')
-    return base64.b64encode(self._cipher.Encrypt(plaintext.encode('utf-8')))
+    return base64.b64encode(self._cipher.Encrypt(plaintext))
 
-  def Decrypt(self, ciphertext):
-    """Decrypt encrypted unicode string.
+  def Decrypt(self, ciphertext, raw=False):
+    """Decrypts base64 ciphertext and returns a unicode or str plaintext.
 
     Args:
-      ciphertext: base64 encoding of an encrypted unicode string.
+      ciphertext: str, base64 encoding of a string.
+      raw: bool, default False, return raw bytes, not a unicode string.
 
     Returns:
       decrypted unicode string.
 
     Raises:
-      ValueError: when ciphertext is not a unicode string.
+      ValueError: when ciphertext is not a str.
     """
     if not isinstance(ciphertext, str):
       raise ValueError('Expected type data str but got: %s' % type(ciphertext))
     raw_plaintext = self._cipher.Decrypt(base64.b64decode(ciphertext))
-    return raw_plaintext.decode('utf-8')
+    if not raw:
+      return raw_plaintext.decode('utf-8')
+    else:
+      return raw_plaintext
 
 
 class PseudonymCipher(_Cipher):
-  """Class for Pseudonym encrypting unicode string."""
+  """Class for Pseudonym encryption of unicode or any bytes str."""
 
   def __init__(self, key):
     """Cipher is initialized with a key of valid Aes key lengths."""
@@ -141,42 +149,52 @@ class PseudonymCipher(_Cipher):
   # for the same value if they are in different fields. An easy solution is to
   # use the field name as iv if its as long enough or use hash of it.
   def Encrypt(self, plaintext):
-    """Encrypts Unicode string after utf-8 encoding it.
+    """Encrypts plaintext and returns base64 str.
 
     Args:
-      plaintext: a unicode string.
+      plaintext: a unicode or str. If the plaintext is unicode it will
+        be encoded as utf-8 prior to encryption. If the plaintext is str
+        it will be encrypted as-is.
 
     Returns:
-      Utf8 encodes plaintext, cbc encrypts it with a 0 iv and base64 encodes it.
+      base64-wrapped version of encryption of plaintext,
+      potentially after encoding unicode characters in utf-8.
 
     Raises:
-      ValueError: when plaintext is empty or not a unicode string.
+      ValueError: when plaintext is empty or not a proper type.
     """
-    if not isinstance(plaintext, unicode):
-      raise ValueError('Expected unicode string type data but got: %s' %
+    if isinstance(plaintext, unicode):
+      plaintext = plaintext.encode('utf-8')
+
+    if not isinstance(plaintext, str):
+      raise ValueError('Expected str or unicode type plaintext but got: %s' %
                        type(plaintext))
     if not plaintext:
       raise ValueError('Input plaintext cannot be empty.')
     return base64.b64encode(
-        self._cipher.Encrypt(plaintext.encode('utf-8'), iv=16 * '\x00'))
+        self._cipher.Encrypt(plaintext, iv=16 * '\x00'))
 
-  def Decrypt(self, ciphertext):
-    """Decrypt encrypted unicode string.
+  def Decrypt(self, ciphertext, raw=False):
+    """Decrypts base64 ciphertext and returns a unicode or str plaintext.
 
     Args:
-      ciphertext: base64 encoding of an encrypted unicode string.
+      ciphertext: str, base64 encoding of a string.
+      raw: bool, default False, return raw bytes, not a unicode string.
 
     Returns:
-      decrypted unicode string assuming iv is 0.
+      decrypted unicode string.
 
     Raises:
-      ValueError: when ciphertext is not a unicode string.
+      ValueError: when ciphertext is not a str.
     """
     if not isinstance(ciphertext, str):
       raise ValueError('Expected type data str but got: %s' % type(ciphertext))
     raw_plaintext = self._cipher.Decrypt(base64.b64decode(ciphertext),
                                          iv=16 * '\x00')
-    return raw_plaintext.decode('utf-8')
+    if not raw:
+      return raw_plaintext.decode('utf-8')
+    else:
+      return raw_plaintext
 
 
 class HomomorphicIntCipher(_Cipher):

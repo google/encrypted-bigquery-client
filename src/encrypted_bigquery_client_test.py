@@ -41,7 +41,7 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
       rewritten_table[i][column_index] = cipher.Encrypt(table[i][column_index])
     return rewritten_table
 
-  def testComputeRows(self):
+  def testComputeRowsEvaluate1(self):
     # Query is 'SELECT 1 + 1, 1 * 1'
     # Testing no queried values.
     stack = [[1, 1, util.OperatorToken('+', 2)],
@@ -50,6 +50,8 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
     real_result = [['2', '1']]
     result = encrypted_bigquery_client._ComputeRows(stack, query)
     self.assertEqual(result, real_result)
+
+  def testComputeRowsEvaluate2(self):
     # Query is 'SELECT 1 + a, 1 * b, "hello"'
     # There are two rows of values for a and b (shown in query).
     # Result becomes as below:
@@ -64,7 +66,123 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
     result = encrypted_bigquery_client._ComputeRows(stack, query)
     self.assertEqual(result, real_result)
 
+  def testComputeRowsWithTableNoManifest(self):
+    """Test _ComputeRows() with a query that returns simple row values."""
+    # Query is
+    # SELECT
+    # column AS HP11223344,
+    # COUNT(column) AS cnt_column
+    # FROM table
+    # GROUP BY HP11223344
+    # HAVING (cnt_column > 1)
+    prefix = util.PSEUDONYM_PREFIX
+    stack = [
+        [util.PseudonymToken('column').SetAlias('HP1122')],
+        [util.AggregationQueryToken('COUNT(column)').SetAlias('cnt_column')],
+    ]
+    # This is just example data. The values have no meaning to the test.
+    queried_values = {
+        'cnt_column': [
+            2L, 6L, 6L, 4L, 2L, 5L, 2L, 7L, 6L, 2L, 3L, 2L, 2L, 4L, 4L, 4L,
+            7L, 5L, 4L, 3L, 2L, 5L, 2L, 4L, 3L],
+        '%scolumn' % prefix: [
+            '"90283714"', '"17007482"', '"40222489"', '"81558712"',
+            '"13579536"', '"50946068"', '"82310121"', '"25566093"',
+            '"27641327"', '"74384378"', '"58169219"', '"42514380"',
+            '"53429045"', '"23220692"', '"28206670"', '"85131464"',
+            '"52975787"', '"39194916"', '"96266483"', '"88770661"',
+            '"16849538"', '"90717726"', '"49895676"', '"23519752"',
+            '"19332978"'],
+        'COUNT(%scolumn)' % prefix: [],
+        'HP1122': [],
+    }
+    real_result = []
+    for i in xrange(len(queried_values['cnt_column'])):
+      a = queried_values['%scolumn' % prefix][i]
+      b = queried_values['cnt_column'][i]
+      real_result.append([a, str(b)])
+
+    self.mox.ReplayAll()
+    result = encrypted_bigquery_client._ComputeRows(
+        stack, queried_values, manifest=None)
+    self.mox.VerifyAll()
+
+    self.assertEqual(result, real_result)
+
+  def testComputeRowsWithTableAndManifest(self):
+    """Test _ComputeRows() with a query that returns simple row values."""
+    # Query is
+    # SELECT
+    # column AS HP11223344,
+    # COUNT(column) AS cnt_column
+    # FROM table
+    # GROUP BY HP11223344
+    # HAVING (cnt_column > 1)
+    mock_manifest = self.mox.CreateMockAnything()
+    prefix = util.PSEUDONYM_PREFIX
+    stack = [
+        [util.PseudonymToken('column').SetAlias('HP1122')],
+        [util.AggregationQueryToken('COUNT(column)').SetAlias('cnt_column')],
+    ]
+    # This is just example data. The values have no meaning to the test.
+    queried_values = {
+        'cnt_column': [
+            2L, 6L, 6L, 4L, 2L, 5L, 2L, 7L, 6L, 2L, 3L, 2L, 2L, 4L, 4L, 4L,
+            7L, 5L, 4L, 3L, 2L, 5L, 2L, 4L, 3L],
+        '%scolumn' % prefix: [
+            '"90283714"', '"17007482"', '"40222489"', '"81558712"',
+            '"13579536"', '"50946068"', '"82310121"', '"25566093"',
+            '"27641327"', '"74384378"', '"58169219"', '"42514380"',
+            '"53429045"', '"23220692"', '"28206670"', '"85131464"',
+            '"52975787"', '"39194916"', '"96266483"', '"88770661"',
+            '"16849538"', '"90717726"', '"49895676"', '"23519752"',
+            '"19332978"'],
+        'COUNT(%scolumn)' % prefix: [],
+        'HP1122': [],
+    }
+    real_result = []
+    for i in xrange(len(queried_values['cnt_column'])):
+      a = queried_values['%scolumn' % prefix][i]
+      b = queried_values['cnt_column'][i]
+      real_result.append([a, str(b)])
+
+    num_rows = len(queried_values['cnt_column'])
+    mock_manifest.statistics = mock_manifest
+    mock_manifest.get(mock_manifest.RECORDS_WRITTEN, 0).AndReturn(num_rows)
+
+    self.mox.ReplayAll()
+    result = encrypted_bigquery_client._ComputeRows(
+        stack, queried_values, manifest=mock_manifest)
+    self.mox.VerifyAll()
+
+    self.assertEqual(result, real_result)
+
+  def testComputeRowsWithTableEmptyResult(self):
+    """Test _ComputeRows() with a query that returns empty (zero) rows."""
+    # Query is
+    # SELECT
+    # column AS HP11223344,
+    # COUNT(column) AS cnt_column
+    # FROM table
+    # GROUP BY HP11223344
+    # HAVING (cnt_column > 1)
+    prefix = util.PSEUDONYM_PREFIX
+    stack = [
+        [util.PseudonymToken('column').SetAlias('HP1122')],
+        [util.AggregationQueryToken('COUNT(column)').SetAlias('cnt_column')],
+    ]
+    queried_values = {
+        'cnt_column': [],
+        '%scolumn' % prefix: [],
+        'COUNT(%scolumn)' % prefix: [],
+        'HP1122': [],
+    }
+    real_result = []
+    result = encrypted_bigquery_client._ComputeRows(stack, queried_values)
+    self.assertEqual(result, real_result)
+
   def testDecryptValues(self):
+    """Test _DecryptValues()."""
     cars_schema = test_util.GetCarsSchema()
     jobs_schema = test_util.GetJobsSchema()
     master_key = test_util.GetMasterKey()
@@ -113,6 +231,17 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
     self.assertRaises(ValueError,
                       encrypted_bigquery_client._GetUnencryptedValuesWithType,
                       table, 1, None)
+
+  def testGetTimestampValues(self):
+    int_str = '1396368000'
+    float_str = '1396368000.0'
+    sn_str = '1.396368E9'
+    ts_str = '"2014-04-01 16:00:00 UTC"'
+    table = [[int_str], [float_str], [sn_str], [None]]
+    column = encrypted_bigquery_client._GetTimestampValues(table, 0)
+    self.assertEqual(
+        column,
+        [ts_str, ts_str, ts_str, util.LiteralToken('null', None)])
 
   def testDecryptGroupConcatValues(self):
     cars_schema = test_util.GetCarsSchema()
@@ -189,6 +318,11 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
     in_expiration = 1000
 
     schema = {'rewrite': False, 'read': True}
+    ue_ie = u'\u0454'
+    ue_ie_utf8 = ue_ie.encode('utf-8')
+    assert ue_ie is not ue_ie_utf8
+    json_schema = 'json schema'
+    zlib_schema = 'zlib schema'
     master_key = 'master_key'
     hashed_key = 'GR0xdEWYxzkd1FA+J50A3bWMq4c='  # b64(sha1(master_key))
     encrypted_schema = 'EEE'
@@ -204,6 +338,7 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
     self.mox.StubOutWithMock(ebc_module.load_lib, 'ReadMasterKeyFile')
     self.mox.StubOutWithMock(ebc_module.ecrypto, 'ProbabilisticCipher')
     self.mox.StubOutWithMock(ebc_module.json, 'dumps')
+    self.mox.StubOutWithMock(ebc_module.zlib, 'compress')
     self.mox.StubOutWithMock(ebc_module.util, 'ConstructTableDescription')
     self.mox.StubOutWithMock(ebc_module.load_lib, 'RewriteSchema')
     self.stubs.Set(
@@ -215,10 +350,13 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
     ebc_module.load_lib.ReadMasterKeyFile(
         'master_key_filename', True).AndReturn(master_key)
     ebc_module.ecrypto.ProbabilisticCipher(master_key).AndReturn(mock_cipher)
-    ebc_module.json.dumps(schema).AndReturn(str(schema))
-    mock_cipher.Encrypt(str(schema)).AndReturn(encrypted_schema)
+    # note ue_ie vs ue_ie_utf8 for encode(utf-8) test
+    ebc_module.json.dumps(schema).AndReturn(json_schema + ue_ie)
+    ebc_module.zlib.compress(
+        json_schema + ue_ie_utf8).AndReturn(zlib_schema)
+    mock_cipher.Encrypt(zlib_schema).AndReturn(encrypted_schema)
     ebc_module.util.ConstructTableDescription(
-        in_description, hashed_key, ebc_module.util.EBQ_VERSION,
+        in_description, hashed_key, ebc_module.util.EBQ_TABLE_VERSION,
         encrypted_schema_b64).AndReturn(new_description)
     ebc_module.load_lib.RewriteSchema(schema).AndReturn(new_schema)
     # and here comes the super() call...
@@ -234,6 +372,29 @@ class EncryptedBigqueryClientTest(googletest.TestCase):
         description=in_description, friendly_name=in_friendly_name,
         expiration=in_expiration)
     self.mox.VerifyAll()
+
+
+class EncryptedTablePrinterTest(googletest.TestCase):
+  """Test the EncryptedTablePrinter class."""
+
+  def setUp(self):
+    self.mox = mox.Mox()
+    self.stubs = stubout.StubOutForTesting()
+
+  def tearDown(self):
+    self.mox.UnsetStubs()
+    self.stubs.UnsetAll()
+
+  def testInitWithManifest(self):
+    """Test __init__() with manifest kwarg."""
+    manifest = 'zmanifestz'
+    try:
+      _ = encrypted_bigquery_client.EncryptedTablePrinter(manifest=manifest)
+      self.fail('EncryptedTablePrinter should raise ValueError')
+    except ValueError, e:
+      self.assertEqual(e.args[0], 'Cannot print table without master_key.')
+    except:  # pylint: disable=bare-except
+      self.fail('EncryptedTablePrinter should raise specific ValueError')
 
 
 def main(_):

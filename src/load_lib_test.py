@@ -32,6 +32,13 @@ FLAGS = flags.FLAGS
 
 _TABLE_ID = '1'
 
+_RELATED = '123'
+_RELATED_PSEUDONYM_SCHEMA = """[
+  {"name": "i", "type": "integer"},
+  {"name": "rc", "type": "string", "encrypt": "pseudonym", "related": "%s"},
+  {"name": "dc", "type": "string", "encrypt": "pseudonym"}
+]\n""" % _RELATED
+
 _BEFORE_MODIFY_SCHEMA = """[
   {"name": "Year", "type": "Integer"},
   {"name": "fullName", "type": "string", "mode": "nullable"},
@@ -225,6 +232,16 @@ _PLACES_REWRITTEN_SCHEMA = """[
         "name": "p698000442118338_HOMOMORPHIC_FLOAT_numberOfYears",
         "type": "string",
         "mode": "required"
+      },
+      {
+        "name": "lat",
+        "mode": "nullable",
+        "type": "float"
+      },
+      {
+        "name": "long",
+        "mode": "nullable",
+        "type": "float"
       }
     ]
   },
@@ -330,6 +347,29 @@ class LoadLibraryTest(googletest.TestCase):
     load_lib._ModifyFields(read_schema)
     expected_schema = json.loads(_AFTER_MODIFY_SCHEMA)
     self.assertEquals(read_schema, expected_schema)
+
+  def testValidateExtendedSchemaWhenNotListOfDicts(self):
+    """Test _ValidateExtendedSchema()."""
+    schema = ['not a dict']
+    self.assertRaises(
+        load_lib.EncryptConvertError, load_lib._ValidateExtendedSchema, schema)
+
+  def testValidateExtendedSchemaWhenCleartextTimestamp(self):
+    """Test _ValidateExtendedSchema()."""
+    schema = [
+        {'name': u'foo1', 'type': 'timestamp'},
+        {'name': 'foo2', 'type': 'timestamp'},
+        {'name': 'foo3', 'type': 'timestamp', 'encrypt': load_lib.NONE}
+    ]
+    load_lib._ValidateExtendedSchema(schema)
+
+  def testValidateExtendedSchemaWhenEncryptTimestamp(self):
+    """Test _ValidateExtendedSchema()."""
+    schema = [
+        {'name': u'foo', 'type': 'timestamp', 'encrypt': 'pseudonym'},
+    ]
+    self.assertRaises(
+        load_lib.EncryptConvertError, load_lib._ValidateExtendedSchema, schema)
 
   def testReadandValidateSchemaFromFile(self):
     infile = os.path.join(self.dirname, 'test_schema_file')
@@ -442,6 +482,36 @@ class LoadLibraryTest(googletest.TestCase):
     infile = self._WriteTempJobsJsonFile()
     load_lib._ValidateJsonDataFile(schema, infile)
 
+  def testGenerateRelatedCiphers(self):
+    """Test _GenerateRelatedCiphers()."""
+    schema = json.loads(_RELATED_PSEUDONYM_SCHEMA)
+    master_key = base64.b64decode(_MASTER_KEY)
+
+    related_cipher_key = 'related cipher key'
+    related_cipher = 'related cipher'
+    default_cipher = 'default cipher'
+
+    self.mox.StubOutWithMock(load_lib.ecrypto, 'PseudonymCipher')
+    self.mox.StubOutWithMock(load_lib.ecrypto, 'GeneratePseudonymCipherKey')
+
+    load_lib.ecrypto.GeneratePseudonymCipherKey(
+        master_key, _RELATED).AndReturn(related_cipher_key)
+    load_lib.ecrypto.PseudonymCipher(related_cipher_key).AndReturn(
+        related_cipher)
+
+    self.mox.ReplayAll()
+    load_lib._GenerateRelatedCiphers(schema, master_key, default_cipher)
+    self.mox.VerifyAll()
+
+    for i in xrange(len(schema)):
+      if schema[i].get('encrypt', None) == 'pseudonym':
+        if schema[i]['name'] == 'rc':
+          self.assertTrue(schema[i]['cipher'] is related_cipher)
+        elif schema[i]['name'] == 'dc':
+          self.assertTrue(schema[i]['cipher'] is default_cipher)
+        else:
+          self.fail('unknown schema name %s' % schema[i]['name'])
+
   def testConvertCsvDataFile(self):
     self._SetupTestFlags()
     schema = json.loads(test_util.GetCarsSchemaString())
@@ -450,7 +520,7 @@ class LoadLibraryTest(googletest.TestCase):
     master_key = base64.b64decode(_MASTER_KEY)
     string_hasher = ecrypto.StringHash(
         ecrypto.GenerateStringHashKey(master_key, _TABLE_ID))
-    pseudonym_cipher = ecrypto.PseudonymCipher(
+    pseudonym_cipher_related = ecrypto.PseudonymCipher(
         ecrypto.GeneratePseudonymCipherKey(master_key, _TABLE_ID))
     load_lib.ConvertCsvDataFile(schema, master_key, _TABLE_ID, infile, outfile)
     # validate new data file against new rewritten schema.
@@ -461,7 +531,7 @@ class LoadLibraryTest(googletest.TestCase):
     fout = open(outfile, 'rt')
     row0 = fout.readline()
     self.assertTrue('1997' in row0)
-    self.assertTrue(pseudonym_cipher.Encrypt(unicode('Ford')) in row0)
+    self.assertTrue(pseudonym_cipher_related.Encrypt(unicode('Ford')) in row0)
     # Get iv and hash for Model searchwords field whose value is 'E350'
     (model_iv, model_hash) = row0.split(',')[2].split(' ')
     # Calculate expected key hash value for 'E350'
@@ -472,6 +542,26 @@ class LoadLibraryTest(googletest.TestCase):
         model_iv + expected_model_key_hash).digest()[:8])
     self.assertEquals(expected_model_hash, model_hash)
     fout.close()
+
+  def testConvertJsonField(self):
+    """Test _ConvertJsonField()."""
+    c = [None] * 5
+    for x in xrange(5):
+      c[x] = self.mox.CreateMockAnything()
+
+    dt = '1464290907.0'
+    dt_f = 1464290907.0
+    data = {'dt': dt}
+    schema = [
+        {
+            'name': 'dt',
+            'type': 'float',
+            'mode': 'required',
+            'encrypt': 'none'
+        }
+    ]
+    r = load_lib._ConvertJsonField(data, schema, *c)
+    self.assertEqual(r, {'dt': dt_f})
 
   def testConvertJsonDataFile(self):
     schema = json.loads(test_util.GetPlacesSchemaString())
@@ -507,6 +597,22 @@ class LoadLibraryTest(googletest.TestCase):
         model_iv + expected_model_key_hash).digest()[:8])
     self.assertEquals(expected_model_hash, model_hash)
     self.assertEquals(data['spouse']['spouseAge'], 23)
+    checked = []
+
+    # look for lat,long in citiesLived
+    found_any = False
+    for city in data['citiesLived']:
+      checked.append(city)
+      if city.get('lat', None) is None:
+        continue
+      found_any = True
+      self.assertTrue(isinstance(city['lat'], float))
+      self.assertTrue(isinstance(city['long'], float))
+      self.assertTrue(city['lat'] >= 0.0)
+      self.assertTrue(city['long'] >= 0.0)
+    self.assertTrue(
+        found_any, 'found_any %s checked ( %s )' % (
+            found_any, ' , '.join(map(str, checked))))
     fout.close()
 
   def testConvertComplexJsonDataFile(self):
@@ -551,6 +657,24 @@ class LoadLibraryTest(googletest.TestCase):
         len(data['citiesLived'][0]['job'][0][util.SEARCHWORDS_PREFIX +
                                              u'manager'][0].split(' ')), 4)
     fout.close()
+
+  def testValidateJsonField(self):
+    """Test _ValidateJsonField()."""
+    ts = '1464288851.0'
+    schema = [{
+        'name': 'dt',
+        'type': 'timestamp',
+        'mode': 'required',
+        'encrypt': 'none',
+    }]
+    data = {
+        'dt': ts,
+    }
+    self.mox.StubOutWithMock(load_lib, '_ValidateDataType')
+    load_lib._ValidateDataType('timestamp', ts).AndReturn(None)
+    self.mox.ReplayAll()
+    load_lib._ValidateJsonField(data, schema, 1)
+    self.mox.VerifyAll()
 
   def testUtf8CsvReader(self):
     """Test _Utf8CsvReader()."""
@@ -607,16 +731,30 @@ class LoadLibraryTest(googletest.TestCase):
   def testValidateDataType(self):
     """Test _ValidateDataType() against different inputs."""
     nothing = 'xnothingx'
+    ece = load_lib.EncryptConvertError
 
     tests = [
         ['3.0', 'float', nothing, nothing],
-        ['x', 'float', nothing, load_lib.EncryptConvertError],
+        ['x', 'float', nothing, ece],
 
         ['3', 'integer', nothing, nothing],
-        ['y', 'integer', nothing, load_lib.EncryptConvertError],
+        ['y', 'integer', nothing, ece],
 
         ['abc', 'string', None, nothing],
         ['junk', 'invalid type_value', None, nothing],
+
+        [1463762508.75, 'timestamp', nothing, nothing],
+        ['1463762508.75', 'timestamp', nothing, nothing],
+        ['1463762508', 'timestamp', nothing, nothing],
+        ['2014-08-19 07:41:35.220 -05:00', 'timestamp', nothing, nothing],
+        ['2014-08-19 12:41:35.220 UTC', 'timestamp', nothing, nothing],
+        ['2014-08-19 12:41:35.220', 'timestamp', nothing, nothing],
+        ['2014-08-19 12:41:35.220000', 'timestamp', nothing, nothing],
+        ['2014-08-19T12:41:35.220Z', 'timestamp', nothing, nothing],
+        ['1969-07-20 20:18:04', 'timestamp', nothing, nothing],
+        ['1969-07-20 20:18:04 UTC', 'timestamp', nothing, nothing],
+        ['1969-07-20T20:18:04', 'timestamp', nothing, nothing],
+        ['2016-04-01 05:06:10 UTC -05:00', 'timestamp', nothing, ece],
     ]
 
     for data_value, type_value, expect_output, expect_exception in tests:
@@ -633,7 +771,7 @@ class LoadLibraryTest(googletest.TestCase):
 
   def testConvertJsonDataFileWhenTypeChanges(self):
     """Test ConvertJsonDataFile()."""
-    infile = tempfile.NamedTemporaryFile(mode='rw+')
+    infile = tempfile.NamedTemporaryFile(mode='a+')
     outfile = tempfile.NamedTemporaryFile(mode='w+')
     json_before = '{"age": "22", "fullname": "John Doe"    }\n'
     # change: 22 is now an int.
@@ -653,9 +791,76 @@ class LoadLibraryTest(googletest.TestCase):
     table_id = '%s' % _TABLE_ID
     load_lib.ConvertJsonDataFile(
         schema, master_key, table_id, infile.name, outfile.name)
-    # compare as dict because key order is flaky in str(dict)
+    # compare as json loaded structure because serialized format is unstable
     json_output = json.loads(outfile.read())
     self.assertEqual(json_output, json_after)
+
+  def testConvertJsonDataFileUSuffixRegression(self):
+    """Test ConvertJsonDataFile() for regression of str last-u fix."""
+    infile = tempfile.NamedTemporaryFile(mode='a+')
+    outfile = tempfile.NamedTemporaryFile(mode='w+')
+    # test utf8 and unicode stability while here.
+    csym = u'\u00a9'  # unicode: (C)
+    csym_utf8 = csym.encode('utf-8')
+    json_before = '{"ustr": "foo%s", "bstr": "foou" }\n' % csym_utf8
+    json_after = {'ustr': u'foo%s' % csym, 'bstr': 'foou'}
+    infile.seek(0)
+    infile.write(json_before)
+    infile.seek(0)
+    master_key = '%s' % _MASTER_KEY
+    schema = [
+        {
+            'mode': 'nullable', 'name': 'ustr', 'type': 'string',
+            'encrypt': 'none'},
+        {
+            'mode': 'nullable', 'name': 'bstr', 'type': 'string',
+            'encrypt': 'none'},
+    ]
+    table_id = '%s' % _TABLE_ID
+    load_lib.ConvertJsonDataFile(
+        schema, master_key, table_id, infile.name, outfile.name)
+    # compare as json loaded structure because serialized format is unstable
+    json_output = json.loads(outfile.read())
+    self.assertEqual(json_output, json_after)
+
+  def testConvertDataTypeWhenFloatTimestamp(self):
+    """Test _ConvertDataType() with a timestamp data value of float."""
+    data_value = 1467922225.0
+    encrypt_type = load_lib.NONE
+    schema = {'name': 'foo', 'type': 'timestamp', 'encrypt': encrypt_type}
+    cipher = self.mox.CreateMockAnything()
+    self.mox.ReplayAll()
+    output = load_lib._ConvertDataType(
+        data_value, encrypt_type, schema, cipher, cipher, cipher, cipher,
+        cipher)
+    self.assertEqual(output, str(data_value))
+    self.mox.VerifyAll()
+
+  def testConvertDataTypeWhenNoneTimestamp(self):
+    """Test _ConvertDataType() with a timestamp data value of None."""
+    data_value = None
+    encrypt_type = load_lib.NONE
+    schema = {'name': 'foo', 'type': 'timestamp', 'encrypt': encrypt_type}
+    cipher = self.mox.CreateMockAnything()
+    self.mox.ReplayAll()
+    output = load_lib._ConvertDataType(
+        data_value, encrypt_type, schema, cipher, cipher, cipher, cipher,
+        cipher)
+    self.assertEqual(output, None)
+    self.mox.VerifyAll()
+
+  def testConvertDataTypeWhenEmptyTimestamp(self):
+    """Test _ConvertDataType() with a timestamp data value of empty str."""
+    data_value = ''
+    encrypt_type = load_lib.NONE
+    schema = {'name': 'foo', 'type': 'timestamp', 'encrypt': encrypt_type}
+    cipher = self.mox.CreateMockAnything()
+    self.mox.ReplayAll()
+    output = load_lib._ConvertDataType(
+        data_value, encrypt_type, schema, cipher, cipher, cipher, cipher,
+        cipher)
+    self.assertEqual(output, None)
+    self.mox.VerifyAll()
 
 
 def main(_):

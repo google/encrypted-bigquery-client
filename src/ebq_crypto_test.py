@@ -38,6 +38,23 @@ class ProbabilisticCiphertTest(googletest.TestCase):
     except ValueError:
       pass  # success
 
+  def testDecryptWhenRaw(self):
+    """Test Decrypt() in raw mode while passing invalid utf-8 bytes."""
+    invalid_utf8 = '\xf0\xf0\xf0'
+    ciphertext = self.cipher.Encrypt(invalid_utf8)
+    plaintext = self.cipher.Decrypt(ciphertext, raw=True)
+    self.assertEqual(invalid_utf8, plaintext)
+
+  def testDecryptWhenNotRaw(self):
+    """Test Decrypt() when not in raw mode, which is the default."""
+    invalid_utf8 = '\xf0\xf0\xf0'
+    ciphertext = self.cipher.Encrypt(invalid_utf8)
+    # although these bytes were encrypted and returned as ciphertext,
+    # attempting to decrypt them (works) and transform them back to
+    # unicode via utf-8 decode (raw=False) should fail.
+    self.assertRaises(
+        UnicodeDecodeError, self.cipher.Decrypt, ciphertext, raw=False)
+
 
 class PseudonymCiphertTest(googletest.TestCase):
 

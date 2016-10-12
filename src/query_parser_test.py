@@ -191,15 +191,16 @@ class QueryParserTest(googletest.TestCase):
     self._RunMathQuery(expression, [1, 'label', 'NTH'])
 
   # pylint: disable=dangerous-default-value
-  def _RunQuery(self, query, select_arg=[], from_arg=[], where_arg=[],
-                having_arg=[], group_by_arg=[], order_by_arg=[], limit_arg=[],
-                as_arg={}, within_arg={}):
+  def _RunQuery(self, query, select_arg=[], from_arg=[], join_arg=[],
+                where_arg=[], having_arg=[], group_by_arg=[], order_by_arg=[],
+                limit_arg=[], as_arg={}, within_arg={}):
     """Run the actual test."""
     clauses = {
         'SELECT': select_arg,
         'AS': as_arg,
         'WITHIN': within_arg,
         'FROM': from_arg,
+        'JOIN': join_arg,
         'WHERE': where_arg,
         'HAVING': having_arg,
         'GROUP BY': group_by_arg,
@@ -261,8 +262,10 @@ class QueryParserTest(googletest.TestCase):
 
   def testAllCommands(self):
     logging.debug('Running testAllCommands method.')
-    ebq_query = """select a, b, c, d from table where a < b having c == d
-                     group by d, c, b, a order by a, b, c, d limit 4"""
+    ebq_query = """select a, b, c, d from table where a < b
+                     group by d, c, b, a
+                     having c == d
+                     order by a, b, c, d limit 4"""
     self._RunQuery(ebq_query, select_arg=[['a'], ['b'], ['c'], ['d']],
                    from_arg=['table'], where_arg=['a', 'b', '<'],
                    having_arg=['c', 'd', '=='],
@@ -292,11 +295,14 @@ class QueryParserTest(googletest.TestCase):
                    order_by_arg=['a', 'b', 'c'],
                    as_arg={0: 'a', 2: 'b', 5: 'c'})
 
-  def testAliasWithoutAs(self):
-    logging.debug('Running testAliasWithoutAs method.')
+  def testAliasWithoutAs1(self):
+    logging.debug('Running testAliasWithoutAs1 method.')
     ebq_query = 'SELECT 1 a from table'
     self._RunQuery(ebq_query, select_arg=[[1]], from_arg=['table'],
                    as_arg={0: 'a'})
+
+  def testAliasWithoutAs2(self):
+    logging.debug('Running testAliasWithoutAs1 method.')
     ebq_query = 'SELECT 1 as a, 2 b, 3, 4 c, 5 as e from table'
     self._RunQuery(ebq_query, select_arg=[[1], [2], [3], [4], [5]],
                    from_arg=['table'], as_arg={0: 'a', 1: 'b', 3: 'c', 4: 'e'})
@@ -323,18 +329,24 @@ class QueryParserTest(googletest.TestCase):
                    from_arg=[
                        '(FLATTEN(table1,field1))(FLATTEN(table2,field2))'])
 
-  def testWithin(self):
-    logging.debug('Running testWithin method.')
+  def testWithin1(self):
+    logging.debug('Running testWithin1 method.')
     ebq_query = 'SELECT SUM(a.b) within a from table'
     self._RunQuery(ebq_query,
                    select_arg=[['a.b', 'SUM']],
                    from_arg=['table'], within_arg={0: 'a'})
+
+  def testWithin2(self):
+    logging.debug('Running testWithin2 method.')
     ebq_query = 'SELECT SUM(a.b) within a as c from table'
     self._RunQuery(ebq_query,
                    select_arg=[['a.b', 'SUM']],
                    from_arg=['table'],
                    as_arg={0: 'c'},
                    within_arg={0: 'a'})
+
+  def testWithin3(self):
+    logging.debug('Running testWithin3 method.')
     ebq_query = ('SELECT a, SUM(a.b) within a, COUNT(c.d.h) within c.d as e, '
                  'f as g from table')
     self._RunQuery(ebq_query,
@@ -347,76 +359,167 @@ class QueryParserTest(googletest.TestCase):
   def _CheckParseFail(self, command):
     self.assertRaises(ParseException, parser.ParseQuery, command)
 
-  def testBadSelect(self):
-    logging.debug('Running testBadSelect method.')
+  def testBadSelect1(self):
+    logging.debug('Running testBadSelect1 method.')
     ebq_query = 'SELECT 1,'
     self._CheckParseFail(ebq_query)
+
+  def testBadSelect2(self):
+    logging.debug('Running testBadSelect2 method.')
     ebq_query = 'SELECT'
     self._CheckParseFail(ebq_query)
+
+  def testBadSelect3(self):
+    logging.debug('Running testBadSelect3 method.')
     ebq_query = 'SELECTa'
     self._CheckParseFail(ebq_query)
 
-  def testBadFrom(self):
-    logging.debug('Running testBadFrom method.')
+  def testBadFrom1(self):
+    logging.debug('Running testBadFrom1 method.')
     ebq_query = 'SELECT a, b from table1 table2'
     self._CheckParseFail(ebq_query)
+
+  def testBadFrom2(self):
+    logging.debug('Running testBadFrom2 method.')
     ebq_query = 'SELECT a, b from table1,'
     self._CheckParseFail(ebq_query)
+
+  def testBadFrom3(self):
+    logging.debug('Running testBadFrom3 method.')
     ebq_query = 'SELECT a, b from '
     self._CheckParseFail(ebq_query)
 
-  def testBadWhereHaving(self):
-    logging.debug('Running testBadWhereHaving method.')
+  def testBadWhereHaving1(self):
+    logging.debug('Running testBadWhereHaving1 method.')
     ebq_query = 'SELECT a, b from table wherea <b'
     self._CheckParseFail(ebq_query)
+
+  def testBadWhereHaving2(self):
+    logging.debug('Running testBadWhereHaving2 method.')
     ebq_query = 'SELECT a, b from table where '
     self._CheckParseFail(ebq_query)
+
+  def testBadWhereHaving3(self):
+    logging.debug('Running testBadWhereHaving3 method.')
     ebq_query = 'SELECT a, b from table where a < b,'
     self._CheckParseFail(ebq_query)
+
+  def testBadWhereHaving4(self):
+    logging.debug('Running testBadWhereHaving4 method.')
     ebq_query = 'SELECT a, b from table where b > a having'
     self._CheckParseFail(ebq_query)
+
+  def testBadWhereHaving5(self):
+    logging.debug('Running testBadWhereHaving5 method.')
     ebq_query = 'SELECT a, b from table havinga'
     self._CheckParseFail(ebq_query)
+
+  def testBadWhereHaving6(self):
+    logging.debug('Running testBadWhereHaving6 method.')
     ebq_query = 'SELECT a, b from table where having a < b'
     self._CheckParseFail(ebq_query)
 
-  def testBadOrderGroup(self):
-    logging.debug('Running testBadOrderGroup method.')
+  def testBadOrderGroup1(self):
+    logging.debug('Running testBadOrderGroup1 method.')
     ebq_query = 'SELECT a, b from table order by'
     self._CheckParseFail(ebq_query)
+
+  def testBadOrderGroup2(self):
+    logging.debug('Running testBadOrderGroup2 method.')
     ebq_query = 'SELECT a, b from table order by a,'
     self._CheckParseFail(ebq_query)
+
+  def testBadOrderGroup3(self):
+    logging.debug('Running testBadOrderGroup3 method.')
     ebq_query = 'SELECT a, b from table order by a group by a, b'
     self._CheckParseFail(ebq_query)
+
+  def testBadOrderGroup04(self):
+    logging.debug('Running testBadOrderGroup04 method.')
     ebq_query = 'SELECT a, b from table order bya group by a, b'
     self._CheckParseFail(ebq_query)
+
+  def testBadOrderGroup5(self):
+    logging.debug('Running testBadOrderGroup5 method.')
     ebq_query = 'SELECT a, b from table order by a group by a,'
     self._CheckParseFail(ebq_query)
 
-  def testBadLimit(self):
-    logging.debug('Running testBadLimit method.')
+  def testBadLimit1(self):
+    logging.debug('Running testBadLimit1 method.')
     ebq_query = 'select a from table limit'
     self._CheckParseFail(ebq_query)
+
+  def testBadLimit2(self):
+    logging.debug('Running testBadLimit2 method.')
     ebq_query = 'select a from table limit a'
     self._CheckParseFail(ebq_query)
+
+  def testBadLimit3(self):
+    logging.debug('Running testBadLimit3 method.')
     ebq_query = 'select a from table limit1'
     self._CheckParseFail(ebq_query)
 
-  def testBadOrdering(self):
-    logging.debug('Running testBadOrdering method.')
+  def testBadOrdering1(self):
+    logging.debug('Running testBadOrdering1 method.')
     ebq_query = 'select a, b where a < b from table'
     self._CheckParseFail(ebq_query)
+
+  def testBadOrdering2(self):
+    logging.debug('Running testBadOrdering2 method.')
     ebq_query = 'select a from table having a < b where a < b'
     self._CheckParseFail(ebq_query)
-    ebq_query = 'select a from table group by a, b having a < b'
+
+  def testBadOrdering3(self):
+    logging.debug('Running testBadOrdering3 method.')
+    ebq_query = 'select a from table having a < b group by a, b'
     self._CheckParseFail(ebq_query)
+
+  def testBadOrdering4(self):
+    logging.debug('Running testBadOrdering4 method.')
     ebq_query = 'select a from table limit 5 having a < b'
     self._CheckParseFail(ebq_query)
+
+  def testAllStatementOrdering(self):
+    logging.debug('Running testAllStatementOrdering method.')
+    ebq_query = (
+        'select a, b, count(b) as cnt '
+        'from t '
+        'join t2 on t2.id=t.id '
+        'join t3 on t3.id=t.id and t3.id!=t2.blockid '
+        'where a > 1 '
+        'group by b '
+        'having cnt > 2 '
+        'order by cnt '
+        'limit 10')
+    self._RunQuery(
+        ebq_query,
+        select_arg=[['a'], ['b'], ['b', 'COUNT']],
+        as_arg={2: 'cnt'},
+        from_arg=['t'],
+        join_arg=[
+            ['t2', 't2.id', 't.id', '='],
+            ['t3', 't3.id', 't.id', '=', 't3.id', 't2.blockid', '!=', 'and'],
+        ],
+        where_arg=['a', 1, '>'],
+        group_by_arg=['b'],
+        having_arg=['cnt', 2, '>'],
+        order_by_arg=['cnt'],
+        limit_arg=[10])
+
+  def testAggregationFunctionWithAlias(self):
+    ebq_query = 'select count(column) as cnt_column from foo'
+    self._RunQuery(
+        ebq_query,
+        select_arg=[['column', 'COUNT']],
+        as_arg={0: 'cnt_column'},
+        from_arg=['foo']
+        )
 
   def testMultipleTablesFail(self):
     logging.debug('Running testMultipleTablesFail method.')
     ebq_query = 'select a from table1, table2'
     self._CheckParseFail(ebq_query)
+
 
 if __name__ == '__main__':
   googletest.main()

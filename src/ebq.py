@@ -201,7 +201,7 @@ def run_main():
   # Put the flags for this module somewhere the flags module will look
   # for them.
   # pylint: disable=protected-access
-  new_name = flags._GetMainModule()
+  new_name = sys.argv[0]
   sys.modules[new_name] = sys.modules['__main__']
   for flag in FLAGS.FlagsByModuleDict().get(__name__, []):
     FLAGS._RegisterFlagByModule(new_name, flag)

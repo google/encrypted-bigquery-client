@@ -209,6 +209,14 @@ def RewriteSelectionCriteria(stack, schema, master_key, table_id):
   string_hasher = ecrypto.StringHash(
       ecrypto.GenerateStringHashKey(master_key, table_id))
 
+  pseudonym_ciphers = {}
+
+  for field in schema:
+    if (field.get('encrypt', '') in ['pseudonym'] and
+        field.get('related', None) is not None):
+      pseudonym_ciphers[field['related']] = ecrypto.PseudonymCipher(
+          ecrypto.GeneratePseudonymCipherKey(master_key, field['related']))
+
   def FailIfEncrypted(tokens):
     if util.IsEncryptedExpression(tokens):
       raise bigquery_client.BigqueryInvalidQueryError(
@@ -220,9 +228,18 @@ def RewriteSelectionCriteria(stack, schema, master_key, table_id):
           'Cannot do equality on probabilistic encryption, '
           'only pseudonym encryption.', None, None, None)
 
-  def RewritePseudonymEncryption(token):
+  def RewritePseudonymEncryption(token, op2=None):
     if isinstance(token, util.StringLiteralToken):
-      return '"%s"' % pseudonym_cipher.Encrypt(unicode(token[1:-1]))
+      if op2 is not None and getattr(op2, 'related', None) is not None:
+        if pseudonym_ciphers.get(op2.related, None) is not None:
+          return '"%s"' % pseudonym_ciphers[op2.related].Encrypt(
+              unicode(token[1:-1]))
+        else:
+          raise bigquery_client.BigqueryInvalidQueryError(
+              'Cannot process token with related attribute in schema without '
+              'matching related attribute', None, None, None)
+      else:
+        return '"%s"' % pseudonym_cipher.Encrypt(unicode(token[1:-1]))
     else:
       return token
 
@@ -328,8 +345,8 @@ def RewriteSelectionCriteria(stack, schema, master_key, table_id):
         FailIfDeterministic(args)
         if (isinstance(args[0], util.PseudonymToken) or
             isinstance(args[1], util.PseudonymToken)):
-          args[0] = RewritePseudonymEncryption(args[0])
-          args[1] = RewritePseudonymEncryption(args[1])
+          args[0] = RewritePseudonymEncryption(args[0], args[1])
+          args[1] = RewritePseudonymEncryption(args[1], args[0])
       elif str(top) == 'contains':
         FailIfEncrypted([args[1]])
         args[0], args[1] = RewriteContainsOrFail(args[0], args[1])

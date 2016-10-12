@@ -27,6 +27,7 @@ from copy import deepcopy
 import csv
 import json
 import os
+import re
 
 import gflags as flags
 import logging
@@ -60,6 +61,9 @@ flags.DEFINE_string('encrypted_table_data_file', None,
                     'creates the name using table_data_file by replacing '
                     '.data suffix with .enc_data or else adding it if .data '
                     'is not present.')
+
+
+NONE = 'none'  # frequently used in JSON schema files
 
 
 class EncryptConvertError(Exception):
@@ -148,7 +152,7 @@ def _ModifyFields(schema):
     if column['type'] == 'record':
       _ModifyFields(column['fields'])
     elif 'encrypt' not in column:
-      column[u'encrypt'] = u'none'
+      column[u'encrypt'] = unicode(NONE)
 
 
 def _StrToUnicode(data):
@@ -195,22 +199,25 @@ def _ValidateExtendedSchema(schema):
       raise EncryptConvertError('Missing either encrypt or fields keyfield.')
     elif 'fields' in column and column['type'] != 'record':
       raise EncryptConvertError('Cannot have fields keyfield if not record.')
-    elif 'encrypt' in column and column['type'] == 'record':
+    elif column.get('encrypt', NONE) != NONE and column['type'] == 'record':
       raise EncryptConvertError('Cannot encrypt a record type.')
+    elif column.get('encrypt', NONE) != NONE and column['type'] == 'timestamp':
+      raise EncryptConvertError('Cannot encrypt a timestamp type.')
     for key in column:
       if (key == 'type' and column[key].lower() in
-          ['integer', 'string', 'float']):
+          ['integer', 'string', 'float', 'timestamp']):
         continue
       elif (key == 'type' and column[key].lower() == 'record' and
             'fields' in column and isinstance(column['fields'], list)):
         continue
-      elif key == 'name' and isinstance(column[key], unicode) and column[key]:
+      elif (key == 'name' and (isinstance(column[key], unicode) or
+          isinstance(column[key], str)) and column[key]):
         continue
       elif (key == 'mode' and column[key].lower() in
             ['required', 'nullable', 'repeated']):
         continue
       elif (key == 'encrypt' and column[key].lower() in
-            ['none', 'probabilistic', 'pseudonym', 'searchwords',
+            [NONE, 'probabilistic', 'pseudonym', 'searchwords',
              'probabilistic_searchwords', 'homomorphic']):
         if (column['encrypt'].lower() in
             ['searchwords', 'probabilistic_searchwords'] and
@@ -221,6 +228,11 @@ def _ValidateExtendedSchema(schema):
               not column['type'] in ['integer', 'float']):
           raise EncryptConvertError('%s needs to be integer or float type in '
                                     'column %s.' % (column['encrypt'], column))
+        continue
+      elif (key == 'related' and
+            isinstance(column[key], unicode)):
+        if column.get('encrypt', '').lower() not in ['pseudonym']:
+          raise EncryptConvertError('%s needs encrypt type pseudonym' % key)
         continue
       elif (key == 'searchwords_separator' and
             isinstance(column[key], unicode) and
@@ -291,7 +303,7 @@ def _RewriteField(field, schema):
   new_field = deepcopy(field)
   # a separate count for new_schema since may insert field due to
   # probabilistic_searchwords mode for encrypt.
-  if field['encrypt'] == 'none':
+  if field['encrypt'] == NONE:
     del new_field['encrypt']
     schema.append(new_field)
     return
@@ -303,6 +315,8 @@ def _RewriteField(field, schema):
     new_field['name'] = util.PSEUDONYM_PREFIX + field['name']
     new_field['type'] = 'string'
     del new_field['encrypt']
+    if 'related' in new_field:
+      del new_field['related']
   elif field['encrypt'] == 'searchwords':
     new_field['name'] = util.SEARCHWORDS_PREFIX + field['name']
     new_field['type'] = 'string'
@@ -334,6 +348,32 @@ def _RewriteField(field, schema):
   schema.append(new_field)
 
 
+def _GenerateRelatedCiphers(schema, master_key, default_cipher):
+  """Reads schema for pseudonym encrypt types and adds generating ciphers.
+
+  Args:
+    schema: list of dict, the db schema. modified by
+    master_key: str, the master key
+    default_cipher: obj, cipher that encrypt() can be called on.
+  Returns:
+    dict, mapping field names to index in schema.
+  """
+  map_name_to_index = {}
+  for i in xrange(len(schema)):
+    logging.warning(schema[i])
+    map_name_to_index[schema[i]['name']] = i
+    if schema[i].get('encrypt', None) == 'pseudonym':
+      related = schema[i].get('related', None)
+      if related is not None:
+        pseudonym_cipher_related = ecrypto.PseudonymCipher(
+            ecrypto.GeneratePseudonymCipherKey(
+                master_key, str(related).encode('utf-8')))
+        schema[i]['cipher'] = pseudonym_cipher_related
+      else:
+        schema[i]['cipher'] = default_cipher
+  return map_name_to_index
+
+
 def ConvertCsvDataFile(schema, master_key, table_id, infile, outfile):
   """Reads utf8 csv data, encrypts and stores into a new csv utf8 data file."""
   prob_cipher = ecrypto.ProbabilisticCipher(
@@ -353,6 +393,7 @@ def ConvertCsvDataFile(schema, master_key, table_id, infile, outfile):
       num_columns = len(schema)
       csv_writer = csv.writer(out_file)
       _ValidateCsvDataFile(schema, infile)
+      _GenerateRelatedCiphers(schema, master_key, pseudonym_cipher)
       csv_reader = _Utf8CsvReader(in_file, csv_writer)
       for row in csv_reader:
         new_row = []
@@ -361,14 +402,14 @@ def ConvertCsvDataFile(schema, master_key, table_id, infile, outfile):
                                     'in row: %s' % row)
         for i in xrange(num_columns):
           encrypt_mode = schema[i]['encrypt']
-          if encrypt_mode == 'none':
+          if encrypt_mode == NONE:
             new_row.append(row[i].encode('utf-8'))
           elif encrypt_mode == 'probabilistic':
             new_row.append(
                 prob_cipher.Encrypt(row[i]).encode('utf-8'))
           elif encrypt_mode == 'pseudonym':
-            new_row.append(
-                pseudonym_cipher.Encrypt(row[i]).encode('utf-8'))
+            cipher = schema[i]['cipher']
+            new_row.append(cipher.Encrypt(row[i]).encode('utf-8'))
           elif encrypt_mode == 'homomorphic' and schema[i]['type'] == 'integer':
             new_row.append(
                 homomorphic_int_cipher.Encrypt(long(row[i])).encode('utf-8'))
@@ -437,13 +478,7 @@ def ConvertJsonDataFile(schema, master_key, table_id, infile, outfile):
         rewritten_data = _ConvertJsonField(
             data, schema, prob_cipher, pseudonym_cipher, string_hasher,
             homomorphic_int_cipher, homomorphic_float_cipher)
-        # When python prints unicode strings, it uses single quotes and
-        # prepends a u before the string (such as u'Hello'). Json does
-        # understand this and will only allow strings of double quotes
-        # without any prefixes, therefore we must substitute to fit
-        # the criteria.
-        rewritten_data = str(rewritten_data).replace('u\'', '"')
-        rewritten_data = rewritten_data.replace('\'', '"')
+        rewritten_data = json.dumps(rewritten_data)
         out_file.write(rewritten_data + '\n')
 
 
@@ -521,13 +556,22 @@ def _ConvertDataType(data_value, encrypt_type, schema, prob_cipher,
                      pseudonym_cipher, string_hasher, homomorphic_int_cipher,
                      homomorphic_float_cipher):
   type_value = schema['type']
-  if encrypt_type == 'none':
+  if encrypt_type == NONE:
     if type_value == 'string':
       return data_value.encode('utf-8')
     elif type_value == 'integer':
       return int(data_value)
     elif type_value == 'float':
       return float(data_value)
+    elif type_value == 'timestamp':
+      if (isinstance(data_value, (int, float, str, unicode)) and
+          data_value != ''):  # pylint: disable=g-explicit-bool-comparison
+        # valid input is an int, float, or non-empty string.
+        # BQ is happy to accept epoch seconds timestamp values inside of
+        # a string, so the safest transformation here is str().
+        return str(data_value)
+      else:
+        return None
   elif encrypt_type == 'probabilistic':
     return prob_cipher.Encrypt(unicode(data_value)).encode('utf-8')
   elif encrypt_type == 'pseudonym':
@@ -552,7 +596,7 @@ def _ConvertDataType(data_value, encrypt_type, schema, prob_cipher,
 
 
 def _RewriteFieldName(name, encrypt_type, type_value):
-  if encrypt_type == 'none':
+  if encrypt_type == NONE:
     return name
   elif encrypt_type == 'homomorphic':
     if type_value == 'integer':
@@ -582,7 +626,7 @@ def _ValidateCsvDataFile(schema, filepath):
       in a row as specified in the schema.
   """
   if not os.path.exists(filepath):
-    raise EncryptConvertError('%s file does not exist', filepath)
+    raise EncryptConvertError('%s file does not exist' % filepath)
   num_columns = len(schema)
   with open(filepath, 'rb') as f:
     csv_reader = _Utf8CsvReader(f)
@@ -637,6 +681,56 @@ def _ValidateJsonField(data, schema, row_number):
       _ValidateDataType(type_value, data_value)
 
 
+def _ValidateDataTimestamp(data_value):
+  """Validate a timestamp value.
+
+  Args:
+    data_value: str, one of the many BigQuery timestamp formats
+  Returns:
+    None
+  Raises:
+    ValueError: if this is not a valid timestamp
+  """
+  basic_transforms = [float, int]
+  for transform in basic_transforms:
+    try:
+      v = transform(data_value)
+      assert v <= 253402300800  # Y10K bug timestamp value used as max
+      return
+    except (ValueError, AssertionError):
+      pass
+
+  # Per the BigQuery documentation these formats are valid:
+  # 2014-08-19 07:41:35.220 -05:00
+  # 2014-08-19 12:41:35.220 UTC
+  # 2014-08-19 12:41:35.220
+  # 2014-08-19 12:41:35.220000
+  # 2014-08-19T12:41:35.220Z
+  # 1969-07-20 20:18:04
+  # 1969-07-20 20:18:04 UTC
+  # 1969-07-20T20:18:04
+
+  timestamp_re = re.compile(
+      r'^(?P<YMD>\d{4}-\d{2}-\d{2})[T ](?P<HMS>\d{2}:\d{2}:\d{2})'
+      r'(?P<FRACTS>\.\d{1,6})?'
+      r'((?P<ZULU>Z)|'
+      r'\s(?P<UTC>)|'
+      r'\s(?P<TZOFFSET>[\+\-]\d{2}:\d{2})|'
+      r'\s(?P<TZ>[A-Z]{3})|'
+      r')$'
+  )
+
+  m = timestamp_re.search(data_value)
+  if m is None:
+    raise ValueError('timestamp format')
+  # TODO(user): One could perform further validation on portions of
+  # the timestamp value to make sure individual components are in range.
+  # However strftime() and strptime() don't maintain perfect feature parity
+  # in python's wrapper of it even though linux glibc tries to. Also
+  # there are things like leap seconds to consider, where 00:00:60 is a valid
+  # HH:MM:SS time.
+
+
 def _ValidateDataType(type_value, data_value):
   if type_value == 'integer':
     try:
@@ -650,6 +744,13 @@ def _ValidateDataType(type_value, data_value):
     except ValueError:
       raise EncryptConvertError('Expected to convert string to float, '
                                 'cannot convert %s.' % data_value)
+
+  elif type_value == 'timestamp':
+    try:
+      _ValidateDataTimestamp(data_value)
+    except ValueError, e:
+      raise EncryptConvertError('Expected to parse timestamp, '
+                                'cannot convert %s: %s' % (data_value, e))
 
 
 def _Utf8CsvReader(utf8_csv_data, skip_rows_writer=None, **kwargs):

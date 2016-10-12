@@ -85,6 +85,14 @@ class CommonCryptoTest(googletest.TestCase):
     self.assertEqual(len(b), 16)
     self.mox.VerifyAll()
 
+  def testPRFWhenUnsupportedHash(self):
+    logging.debug('Running testPRFWhenUnsupportedHash method.')
+    hashfunc = 'sha999'
+    # sanity check
+    self.assertRaises(ValueError, ccrypto.hashlib.new, hashfunc)
+    self.assertRaises(
+        ValueError, ccrypto.PRF, _KEY1, _PLAINTEXT1, hashfunc=hashfunc)
+
   def testPRF(self):
     logging.debug('Running testPRF method.')
     output1 = ccrypto.PRF(_KEY1, _PLAINTEXT1, hashfunc='sha256')

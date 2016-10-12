@@ -30,7 +30,7 @@ REQUIRED_PACKAGES = [
     'ipaddr==2.1.10',
     'bigquery==2.0.14',
     'pyparsing==1.5.5',
-    'pycrypto==2.1',
+    'pycrypto==2.6.1',
     'httplib2==0.8',
     'mox==0.5.3',
     ]
@@ -46,7 +46,7 @@ py_version = platform.python_version()
 if py_version < '2.7' or py_version >= '3':
   raise ValueError('Encrypted BigQuery requires Python >= 2.7 and < 3.')
 
-_EBQ_VERSION = '1.4'  # keep in sync with BUILD:VERSION
+_EBQ_VERSION = '1.46'  # keep in sync with BUILD:VERSION
 
 setup(name='encrypted_bigquery',
       version=_EBQ_VERSION,
