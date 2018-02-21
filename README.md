@@ -1,3 +1,8 @@
+
+![status: inactive](https://img.shields.io/badge/status-inactive-red.svg)
+
+This project is no longer actively developed or maintained. For similar work, see how to use [Customer managed encryption keys with BigQuery](https://cloud.google.com/bigquery/docs/customer-managed-encryption).
+
 # encrypted-bigquery-client
 
 The encrypted BigQuery client is an experimental extension of the
